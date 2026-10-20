@@ -1,239 +1,248 @@
-# 📦 Stock Alert — Application de gestion de stock avec microservices
 
-## 1. Présentation du projet
+# Stock-Alert — Gestion intelligente des stocks
 
-**Stock Alert** est une application de gestion de stock basée sur une architecture microservices avec Spring Boot et Spring Cloud.
+Application distribuée de gestion des stocks multi-entrepôts avec détection des ruptures, alertes automatiques et réapprovisionnement via des commandes d'achat.
 
-L'objectif est de gérer les produits, de suivre les quantités disponibles et de générer des alertes lorsque le stock d'un produit atteint ou passe sous un seuil minimal.
+## Présentation du projet
 
-L'application est composée de trois services métier et de trois composants d'infrastructure :
+**Stock-Alert** vise à automatiser le cycle de réapprovisionnement. Lorsqu'une sortie de stock fait passer la quantité disponible sous un seuil défini, une alerte est créée et un processus de commande auprès d'un fournisseur est déclenché.
 
-- **Product Service** : gestion des produits.
-- **Stock Service** : gestion des quantités disponibles, des seuils minimaux et des mouvements de stock.
-- **Alert Service** : création et consultation des alertes de stock faible.
-- **Eureka Server** : enregistrement et découverte des microservices.
-- **Config Server** : centralisation de la configuration.
-- **API Gateway** : point d'entrée unique et routage des requêtes vers les services métier.
+À la réception de la livraison, le stock est mis à jour et l'alerte correspondante est clôturée.
 
-## 2. Fonctionnement du projet
+### Objectifs
 
-Le fonctionnement de l'application repose sur les étapes suivantes :
+- Gérer les produits et les stocks de plusieurs entrepôts.
+- Détecter automatiquement les risques de rupture.
+- Centraliser les fournisseurs et les commandes d'achat.
+- Automatiser le processus de réapprovisionnement.
+- Assurer la communication entre les microservices.
+- Garantir le suivi du cycle de vie des commandes et des alertes.
 
-1. L'utilisateur envoie une requête via l'API Gateway pour créer, consulter ou modifier un produit.
-2. Le Product Service traite les opérations relatives aux produits.
-3. Le Stock Service enregistre les quantités disponibles et les seuils minimaux.
-4. Lorsque la quantité en stock devient inférieure ou égale au seuil minimal, le système déclenche la création d'une alerte.
-5. L'Alert Service enregistre les alertes et permet de consulter leur état.
-6. Eureka Server permet aux applications de s'enregistrer et de découvrir les autres services.
-7. Config Server centralise les configurations des applications.
-8. L'API Gateway achemine les requêtes vers les services concernés.
+> **Unité de traitement principale : la commande d'achat**
+>
+> Cycle de vie : `BROUILLON → EMISE → LIVREE`
 
-**Exemple :** un produit possède une quantité disponible de 5 unités et un seuil minimal de 10 unités. Le système génère une alerte indiquant que le stock est faible.
+## Architecture fonctionnelle
 
-## 3. Diagramme de classes UML global
+Le système repose sur trois microservices métier, chacun responsable d'un domaine fonctionnel distinct.
 
-Ce diagramme présente les principales classes des services métier, leurs relations internes et leurs dépendances entre services.
+### 1. `service-inventaire`
+
+Responsable du référentiel des produits et de la gestion des quantités par entrepôt.
+
+| Entité | Responsabilité | Attributs principaux |
+|---|---|---|
+| `Product` | Référentiel des produits | `id`, `nom`, `reference`, `categorie` |
+| `StockLevel` | Stock d'un produit dans un entrepôt | `id`, `productId`, `entrepot`, `quantite`, `seuilAlerte` |
+
+### 2. `service-approvisionnement`
+
+Service principal de gestion des fournisseurs et des commandes d'achat.
+
+| Entité | Responsabilité | Attributs principaux |
+|---|---|---|
+| `Supplier` | Référentiel des fournisseurs | `id`, `nom`, `email`, `delaiLivraisonJours` |
+| `PurchaseOrder` | Commande d'achat fournisseur | `id`, `supplierId`, `productId`, `quantiteCommandee`, `statut`, `date` |
+
+Chaque commande concerne un produit, un fournisseur, une quantité et un statut.
+
+### 3. `service-alertes`
+
+Responsable de la définition des seuils et du suivi des ruptures de stock.
+
+| Entité | Responsabilité | Attributs principaux |
+|---|---|---|
+| `Threshold` | Règle de réapprovisionnement | `id`, `productId`, `seuilMin`, `quantiteReappro`, `canal` |
+| `StockAlert` | Alerte de rupture | `id`, `productId`, `entrepot`, `niveauDetecte`, `statut` |
+
+## Diagramme de classes UML
+
+Ce diagramme présente les principales entités métier, leurs attributs et les relations logiques entre les produits, les stocks, les fournisseurs, les commandes et les alertes.
 
 ```mermaid
 classDiagram
-    direction LR
+    direction TB
 
-    namespace Product_Service {
-        class ProductController {
-            +createProduct()
-            +getAllProducts()
-            +getProductById()
-            +updateProduct()
-            +deleteProduct()
-        }
-
-        class ProductService {
-            +createProduct()
-            +getAllProducts()
-            +getProductById()
-            +updateProduct()
-            +deleteProduct()
-        }
-
-        class ProductRepository {
-            +findAll()
-            +findById()
-            +save()
-            +delete()
-        }
-
-        class Product {
-            +Long id
-            +String name
-            +String description
-            +String category
-        }
+    class Product {
+        +Long id
+        +String nom
+        +String reference
+        +String categorie
     }
 
-    namespace Stock_Service {
-        class StockController {
-            +getStock()
-            +updateQuantity()
-            +getMovements()
-        }
-
-        class StockService {
-            +getStock()
-            +updateQuantity()
-            +checkThreshold()
-            +recordMovement()
-        }
-
-        class StockRepository {
-            +findByProductId()
-            +save()
-        }
-
-        class StockMovementRepository {
-            +findByProductId()
-            +save()
-        }
-
-        class Stock {
-            +Long id
-            +Long productId
-            +Integer quantity
-            +Integer minimumThreshold
-        }
-
-        class StockMovement {
-            +Long id
-            +Long productId
-            +Integer quantity
-            +String type
-            +LocalDateTime date
-        }
+    class StockLevel {
+        +Long id
+        +Long productId
+        +String entrepot
+        +int quantite
+        +int seuilAlerte
     }
 
-    namespace Alert_Service {
-        class AlertController {
-            +getAllAlerts()
-            +getAlertById()
-            +resolveAlert()
-        }
-
-        class AlertService {
-            +createAlert()
-            +getAllAlerts()
-            +getAlertById()
-            +resolveAlert()
-        }
-
-        class AlertRepository {
-            +findAll()
-            +findById()
-            +save()
-        }
-
-        class StockAlert {
-            +Long id
-            +Long productId
-            +String message
-            +LocalDateTime createdAt
-            +AlertStatus status
-        }
-
-        class AlertStatus {
-            <<enumeration>>
-            NEW
-            RESOLVED
-        }
+    class Supplier {
+        +Long id
+        +String nom
+        +String email
+        +int delaiLivraisonJours
     }
 
-    ProductController --> ProductService
-    ProductService --> ProductRepository
-    ProductRepository --> Product
+    class PurchaseOrder {
+        +Long id
+        +Long supplierId
+        +Long productId
+        +int quantiteCommandee
+        +StatutCommande statut
+        +Date date
+    }
 
-    StockController --> StockService
-    StockService --> StockRepository
-    StockService --> StockMovementRepository
-    StockRepository --> Stock
-    StockMovementRepository --> StockMovement
-    Stock "1" --> "0..*" StockMovement : mouvements
+    class Threshold {
+        +Long id
+        +Long productId
+        +int seuilMin
+        +int quantiteReappro
+        +String canal
+    }
 
-    AlertController --> AlertService
-    AlertService --> AlertRepository
-    AlertRepository --> StockAlert
-    StockAlert --> AlertStatus
+    class StockAlert {
+        +Long id
+        +Long productId
+        +String entrepot
+        +int niveauDetecte
+        +String statut
+    }
 
-    StockService ..> ProductService : informations produit
-    AlertService ..> StockService : verification du stock
-    AlertService ..> ProductService : informations produit
+    Product "1" --> "0..*" StockLevel : possède
+    Product "1" --> "0..*" PurchaseOrder : concerne
+    Supplier "1" --> "0..*" PurchaseOrder : reçoit
+    Product "1" --> "0..1" Threshold : possède une règle
+    Product "1" --> "0..*" StockAlert : génère
+    StockLevel "1" --> "0..*" StockAlert : déclenche
 ```
 
-**Remarque :** ce diagramme représente la conception prévue. Les classes et les méthodes devront correspondre à l'implémentation réelle du projet. Les flèches en pointillés représentent les dépendances entre les services métier.
+> Les relations de ce diagramme représentent le modèle métier cible. Elles devront correspondre aux associations et aux clés étrangères réellement implémentées dans les classes Java.
 
-## 4. Schéma global de l'architecture
+## Architecture technique
 
-L'API Gateway constitue le point d'entrée des requêtes des clients. Eureka assure la découverte des services, tandis que Config Server centralise leur configuration.
+L'architecture repose sur trois microservices métier qui communiquent de manière synchrone avec OpenFeign et de manière asynchrone à travers Apache Kafka.
 
 ```mermaid
 flowchart TB
-    Client["Client / Frontend"]
+    INV["service-inventaire"]
+    ALT["service-alertes"]
+    APP["service-approvisionnement"]
+    K[("Apache Kafka")]
 
-    Gateway["API Gateway<br/>Port : 8080"]
+    APP -->|"OpenFeign : consulter le stock"| INV
+    ALT -->|"OpenFeign : vérifier le stock"| INV
 
-    Product["Product Service<br/>Port : 8081"]
-    Stock["Stock Service<br/>Port : 8082"]
-    Alert["Alert Service<br/>Port : 8083"]
+    INV -->|"Publie : stock-low"| K
+    K -->|"Consomme : stock-low"| ALT
 
-    Eureka["Eureka Server<br/>Port : 8761"]
-    Config["Config Server<br/>Port : 8888"]
+    ALT -->|"Publie : reorder-triggered"| K
+    K -->|"Consomme : reorder-triggered"| APP
 
-    Client --> Gateway
-
-    Gateway --> Product
-    Gateway --> Stock
-    Gateway --> Alert
-
-    Product -. Enregistrement .-> Eureka
-    Stock -. Enregistrement .-> Eureka
-    Alert -. Enregistrement .-> Eureka
-    Gateway -. Découverte des services .-> Eureka
-
-    Config -. Configuration .-> Gateway
-    Config -. Configuration .-> Product
-    Config -. Configuration .-> Stock
-    Config -. Configuration .-> Alert
+    APP -->|"Publie : delivery-received"| K
+    K -->|"Consomme : delivery-received"| INV
+    K -->|"Consomme : delivery-received"| ALT
 ```
 
-## 5. Liste des applications et des ports
+### Rôle des microservices
 
-| Application | Port | Rôle |
-|---|---:|---|
-| API Gateway | 8080 | Point d'entrée unique et routage des requêtes |
-| Product Service | 8081 | Gestion des produits |
-| Stock Service | 8082 | Gestion du stock et des mouvements |
-| Alert Service | 8083 | Gestion des alertes de stock faible |
-| Eureka Server | 8761 | Enregistrement et découverte des services |
-| Config Server | 8888 | Centralisation de la configuration |
+- **Inventaire :** gère les produits, les stocks et la détection des seuils bas.
+- **Alertes :** gère les règles de seuil, crée les alertes et déclenche le réapprovisionnement.
+- **Approvisionnement :** gère les fournisseurs, les commandes d'achat et la réception des livraisons.
+- **Apache Kafka :** transporte les événements métier entre les services.
 
-Les ports proposés sont des ports locaux de développement. Ils pourront être modifiés dans les fichiers de configuration Spring Boot.
+## Communication entre les microservices
 
-## 6. Technologies utilisées
+### Communication synchrone — OpenFeign
 
-- Java
-- Spring Boot
-- Spring Cloud
-- Spring Cloud Netflix Eureka
-- Spring Cloud Config
-- Spring Cloud Gateway
-- Spring Data JPA
-- Base de données relationnelle
-- Git et GitHub
-- Mermaid pour les diagrammes
+OpenFeign permet à un microservice d'appeler une API REST d'un autre microservice et d'obtenir une réponse immédiate.
 
-## 7. Objectifs du projet
+- **Approvisionnement → Inventaire :** consulter la quantité disponible avant de déclencher une commande d'achat.
+- **Alertes → Inventaire :** vérifier que le stock est sous le seuil avant de créer une alerte.
 
-- Comprendre les principes d'une architecture microservices.
-- Séparer les responsabilités entre les services métier.
-- Mettre en place la découverte des services avec Eureka.
-- Centraliser la configuration avec Config Server.
-- Gérer le routage avec API Gateway.
-- Détecter les situations de stock faible et générer des alertes.
-- Documenter l'architecture et les relations entre les services.
+### Communication asynchrone — Apache Kafka
+
+Kafka permet de transmettre des événements métier sans imposer un appel direct entre le producteur et le consommateur.
+
+| Événement | Producteur | Consommateur(s) | Traitement |
+|---|---|---|---|
+| `stock-low` | `service-inventaire` | `service-alertes` | Créer une alerte à partir de la règle de seuil |
+| `reorder-triggered` | `service-alertes` | `service-approvisionnement` | Créer et émettre une commande d'achat |
+| `delivery-received` | `service-approvisionnement` | `service-inventaire`, `service-alertes` | Mettre à jour le stock et clôturer l'alerte |
+
+## Scénario métier : du stock bas à la livraison
+
+1. Une sortie de stock est enregistrée dans un entrepôt.
+2. Le service d'inventaire détecte que la quantité passe sous le seuil d'alerte et publie l'événement `stock-low`.
+3. Le service d'alertes reçoit l'événement, vérifie le stock auprès du service d'inventaire et consulte la règle `Threshold`.
+4. Une `StockAlert` est créée pour le produit et l'entrepôt concernés.
+5. Le service d'alertes publie `reorder-triggered` avec les informations nécessaires au réapprovisionnement.
+6. Le service d'approvisionnement identifie le fournisseur et crée une `PurchaseOrder` au statut `BROUILLON`.
+7. La commande est transmise au fournisseur et son statut passe à `EMISE`.
+8. À la réception de la livraison, la commande passe à `LIVREE` et l'événement `delivery-received` est publié.
+9. Le service d'inventaire met à jour la quantité disponible.
+10. Le service d'alertes clôture l'alerte correspondante.
+
+## Technologies
+
+La stack technique cible comprend :
+
+- **Langage :** Java 25
+- **Framework backend :** Spring Boot
+- **Communication synchrone :** Spring Cloud OpenFeign
+- **Messagerie asynchrone :** Apache Kafka
+- **Persistance :** Spring Data JPA
+- **Base de données :** PostgreSQL
+- **Gestion des dépendances :** Maven
+- **Environnement de développement :** IntelliJ IDEA
+- **Tests d'API :** Postman
+
+> Cette liste correspond aux technologies envisagées pour le projet. Elle doit être ajustée selon les dépendances et les composants réellement configurés dans le dépôt.
+
+## Structure logique cible
+
+```text
+projetstock_alert/
+├── service-inventaire/
+│   └── src/
+├── service-approvisionnement/
+│   └── src/
+├── service-alertes/
+│   └── src/
+├── README.md
+└── ...
+```
+
+Cette arborescence illustre l'organisation logique souhaitée. Les dossiers doivent correspondre à la structure réelle du dépôt.
+
+## Tests et validation
+
+Les tests devront couvrir les principaux scénarios métier :
+
+- Consultation du stock par produit et par entrepôt.
+- Détection d'un seuil d'alerte dépassé.
+- Création et clôture d'une alerte.
+- Déclenchement du réapprovisionnement.
+- Création et changement d'état d'une commande d'achat.
+- Réception d'une livraison et mise à jour du stock.
+- Communication entre les microservices via OpenFeign.
+- Publication et consommation des événements Kafka.
+- Gestion des erreurs et des événements reçus plusieurs fois.
+
+## Évolutions prévues
+
+- Ajouter des tests unitaires et des tests d'intégration.
+- Documenter les API REST avec Swagger / OpenAPI.
+- Mettre en place la découverte des services avec Eureka si nécessaire.
+- Centraliser la configuration avec Spring Cloud Config si nécessaire.
+- Ajouter une gestion robuste des erreurs et des nouvelles tentatives Kafka.
+- Prévenir les doublons lors du traitement des événements.
+- Conteneuriser les microservices et leurs dépendances avec Docker Compose.
+- Ajouter un tableau de bord de suivi des stocks et des alertes.
+
+## Auteur
+
+**Aya Jarmouni**
+
+Projet académique — Architecture microservices et automatisation de la gestion des stocks.

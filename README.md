@@ -42,7 +42,7 @@ Service principal de gestion des fournisseurs et des commandes d'achat.
 | Entité | Responsabilité | Attributs principaux |
 |---|---|---|
 | `Supplier` | Référentiel des fournisseurs | `id`, `nom`, `email`, `delaiLivraisonJours` |
-| `PurchaseOrder` | Commande d'achat fournisseur | `id`, `supplierId`, `productId`, `quantiteCommandee`, `statut`, `date` |
+| `PurchaseOrder` | Commande d'achat fournisseur | `id`, `supplierId`, `productId`, `entrepot`, `quantiteCommandee`, `statut`, `date` |
 
 Chaque commande concerne un produit, un fournisseur, une quantité et un statut.
 
@@ -52,8 +52,8 @@ Responsable de la définition des seuils et du suivi des ruptures de stock.
 
 | Entité | Responsabilité | Attributs principaux |
 |---|---|---|
-| `Threshold` | Règle de réapprovisionnement | `id`, `productId`, `seuilMin`, `quantiteReappro`, `canal` |
-| `StockAlert` | Alerte de rupture | `id`, `productId`, `entrepot`, `niveauDetecte`, `statut` |
+| `Threshold` | Règle de réapprovisionnement | `id`, `productId`, `supplierId`, `entrepot`, `seuilMin`, `quantiteReappro`, `canal` |
+| `StockAlert` | Alerte de rupture | `id`, `thresholdId`, `productId`, `entrepot`, `niveauDetecte`, `statut` |
 
 ## Diagramme de classes UML
 
@@ -89,14 +89,17 @@ classDiagram
         +Long id
         +Long supplierId
         +Long productId
+        +String entrepot
         +int quantiteCommandee
         +StatutCommande statut
-        +Date date
+        +LocalDate date
     }
 
     class Threshold {
         +Long id
         +Long productId
+        +Long supplierId
+        +String entrepot
         +int seuilMin
         +int quantiteReappro
         +String canal
@@ -104,6 +107,7 @@ classDiagram
 
     class StockAlert {
         +Long id
+        +Long thresholdId
         +Long productId
         +String entrepot
         +int niveauDetecte
@@ -188,33 +192,136 @@ Kafka permet de transmettre des événements métier sans imposer un appel direc
 
 La stack technique cible comprend :
 
-- **Langage :** Java 25
+- **Langage :** Java 17 minimum
 - **Framework backend :** Spring Boot
 - **Communication synchrone :** Spring Cloud OpenFeign
 - **Messagerie asynchrone :** Apache Kafka
 - **Persistance :** Spring Data JPA
-- **Base de données :** PostgreSQL
+- **Base de données :** H2 en mémoire (V1) — PostgreSQL envisagé pour la suite
 - **Gestion des dépendances :** Maven
 - **Environnement de développement :** IntelliJ IDEA
-- **Tests d'API :** Postman
+- **Tests d'API :** Postman, Swagger UI (springdoc-openapi)
 
 > Cette liste correspond aux technologies envisagées pour le projet. Elle doit être ajustée selon les dépendances et les composants réellement configurés dans le dépôt.
 
-## Structure logique cible
+## Structure du dépôt
 
 ```text
 projetstock_alert/
-├── service-inventaire/
-│   └── src/
-├── service-approvisionnement/
-│   └── src/
-├── service-alertes/
-│   └── src/
-├── README.md
-└── ...
+├── pom.xml                      # POM agrégateur (3 modules)
+├── service-inventaire/          # port 8081 — Product, StockLevel
+├── service-approvisionnement/   # port 8082 — Supplier, PurchaseOrder
+├── service-alertes/             # port 8083 — Threshold, StockAlert
+├── postman/                     # collection de tests Postman
+└── README.md
 ```
 
-Cette arborescence illustre l'organisation logique souhaitée. Les dossiers doivent correspondre à la structure réelle du dépôt.
+Chaque module est une application Spring Boot autonome, avec son propre POM, sa propre base H2 en mémoire et la même organisation en couches :
+
+```text
+com.stockalert.<service>/
+├── controller/   # API REST (codes HTTP, @Valid)
+├── service/      # règles métier, transactions
+├── repository/   # Spring Data JPA
+├── entite/       # entités JPA
+├── dto/          # DTO validés (Jakarta Validation)
+├── mapper/       # MapStruct entité <-> DTO
+└── exception/    # exceptions métier + @RestControllerAdvice
+```
+
+## Jalon V1 — Services métier indépendants
+
+Livrables : trois services opérationnels (Controller / Service / Repository), DTO validés, API REST avec codes HTTP adaptés et gestion centralisée des erreurs, données propres à chaque service. Aucun appel entre services à ce stade : OpenFeign et Kafka arrivent aux jalons suivants (les points d'intégration sont signalés par des commentaires `Jalon suivant` dans le code).
+
+### Prérequis
+
+- JDK 17 ou supérieur, Maven (ou le wrapper `mvnw` fourni), IntelliJ IDEA.
+
+### Compiler et lancer
+
+```powershell
+.\mvnw.cmd clean verify
+
+.\mvnw.cmd -pl service-inventaire spring-boot:run
+.\mvnw.cmd -pl service-approvisionnement spring-boot:run
+.\mvnw.cmd -pl service-alertes spring-boot:run
+```
+
+Dans IntelliJ : ouvrir le `pom.xml` racine (*Load Maven Project*), puis lancer chaque classe `Service...Application` (trois configurations d'exécution distinctes).
+
+| Service | Port | Swagger UI | Console H2 |
+|---|---|---|---|
+| service-inventaire | 8081 | http://localhost:8081/swagger-ui/index.html | http://localhost:8081/h2-console (`jdbc:h2:mem:inventairedb`, user `sa`) |
+| service-approvisionnement | 8082 | http://localhost:8082/swagger-ui/index.html | http://localhost:8082/h2-console (`jdbc:h2:mem:approvisionnementdb`) |
+| service-alertes | 8083 | http://localhost:8083/swagger-ui/index.html | http://localhost:8083/h2-console (`jdbc:h2:mem:alertesdb`) |
+
+Les bases sont recréées et alimentées par `data.sql` à chaque démarrage.
+
+### Endpoints
+
+**service-inventaire**
+
+| Méthode | URL | Description | Codes |
+|---|---|---|---|
+| GET / POST | `/products` | Lister / créer un produit | 200 / 201, 400, 409 (référence en double) |
+| GET / PUT / DELETE | `/products/{id}` | Consulter / modifier / supprimer | 200, 204, 400, 404, 409 (stock rattaché) |
+| GET / POST | `/stock-levels` | Lister (`?productId=&entrepot=`) / créer | 200 / 201, 400, 404 (produit), 409 (doublon produit+entrepôt) |
+| GET / PUT / DELETE | `/stock-levels/{id}` | Consulter / modifier / supprimer | 200, 204, 400, 404, 409 |
+| POST | `/stock-levels/{id}/sortie` | Sortie de stock `{"quantite": n}` | 200, 400, 404, 409 (stock insuffisant) |
+| POST | `/stock-levels/{id}/entree` | Entrée de stock `{"quantite": n}` | 200, 400, 404 |
+
+**service-approvisionnement**
+
+| Méthode | URL | Description | Codes |
+|---|---|---|---|
+| GET / POST | `/suppliers` | Lister / créer un fournisseur | 200 / 201, 400 |
+| GET / PUT / DELETE | `/suppliers/{id}` | Consulter / modifier / supprimer | 200, 204, 400, 404, 409 (commandes rattachées) |
+| GET / POST | `/purchase-orders` | Lister (`?statut=&supplierId=`) / créer (statut `BROUILLON`) | 200 / 201, 400, 404 (fournisseur) |
+| GET / PUT / DELETE | `/purchase-orders/{id}` | Consulter / modifier / supprimer (`BROUILLON` seulement) | 200, 204, 400, 404, 409 |
+| POST | `/purchase-orders/{id}/emettre` | `BROUILLON` → `EMISE` | 200, 404, 409 |
+| POST | `/purchase-orders/{id}/livrer` | `EMISE` → `LIVREE` | 200, 404, 409 |
+
+**service-alertes**
+
+| Méthode | URL | Description | Codes |
+|---|---|---|---|
+| GET / POST | `/thresholds` | Lister / créer une règle de seuil | 200 / 201, 400, 409 (doublon produit+entrepôt) |
+| GET / PUT / DELETE | `/thresholds/{id}` | Consulter / modifier / supprimer | 200, 204, 400, 404, 409 (alertes rattachées) |
+| GET / POST | `/stock-alerts` | Lister (`?statut=&productId=`) / créer une alerte `OUVERTE` | 200 / 201, 400, 404 (règle), 409 (alerte ouverte existante) |
+| GET / DELETE | `/stock-alerts/{id}` | Consulter / supprimer | 200, 204, 404 |
+| POST | `/stock-alerts/{id}/cloturer` | `OUVERTE` → `CLOTUREE` | 200, 404, 409 |
+
+### Format des erreurs
+
+Toutes les erreurs renvoient le même corps JSON :
+
+```json
+{
+  "timestamp": "2026-11-18T22:10:31.512",
+  "status": 400,
+  "erreur": "Bad Request",
+  "message": "Données de la requête invalides",
+  "chemin": "/products",
+  "details": ["nom : Le nom est obligatoire", "reference : La référence est obligatoire"]
+}
+```
+
+| Code | Cas |
+|---|---|
+| 400 | Validation du DTO, JSON mal formé, énumération ou identifiant de type incorrect |
+| 404 | Ressource inexistante (y compris produit/fournisseur/règle référencé dans le corps) |
+| 409 | Conflit métier : doublon, transition de statut interdite, stock insuffisant, suppression d'une ressource encore utilisée |
+
+### Tests
+
+Importer `postman/Stock-Alert-v1.postman_collection.json` dans Postman, démarrer les trois services, puis exécuter chaque dossier avec le **Collection Runner** (dans l'ordre : les identifiants créés sont enchaînés par des variables). La collection contient 72 requêtes avec assertions couvrant les cas valides, les erreurs de validation (400), les ressources inexistantes (404) et les conflits (409). Swagger UI permet aussi de tester manuellement chaque service.
+
+### Choix de conception pour la V1
+
+- Les références entre services (`productId`, `supplierId`, `thresholdId` hors du service propriétaire) sont de simples `Long` sans contrainte de clé étrangère : chaque service reste autonome. La vérification se fait au jalon suivant via OpenFeign.
+- Une `PurchaseOrder` naît toujours en `BROUILLON` (date du jour) ; seul un brouillon peut être modifié ou supprimé.
+- Une `StockAlert` reprend `productId` et `entrepot` de sa règle `Threshold` ; le niveau détecté doit être inférieur à `seuilMin`, et une seule alerte `OUVERTE` est admise par règle.
+- La livraison d'une commande (`livrer`) ne met pas encore le stock à jour et ne clôture pas l'alerte : ce sera le rôle de l'événement Kafka `delivery-received`.
 
 ## Tests et validation
 
@@ -233,7 +340,6 @@ Les tests devront couvrir les principaux scénarios métier :
 ## Évolutions prévues
 
 - Ajouter des tests unitaires et des tests d'intégration.
-- Documenter les API REST avec Swagger / OpenAPI.
 - Mettre en place la découverte des services avec Eureka si nécessaire.
 - Centraliser la configuration avec Spring Cloud Config si nécessaire.
 - Ajouter une gestion robuste des erreurs et des nouvelles tentatives Kafka.

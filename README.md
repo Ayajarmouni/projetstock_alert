@@ -384,3 +384,79 @@ Un nouveau service qui rejoint Eureka devient accessible via la Gateway sans mod
 ### Routage statique (profil `statique`)
 
 Lancer la Gateway avec `-Dspring.profiles.active=statique` (VM options IntelliJ). Les chemins sont alors exposés sans préfixe de service : `http://localhost:8080/products`, `/suppliers`, `/thresholds`, etc. (`lb://` + Eureka pour résoudre les instances).
+
+## Jalon V3 — Centralisation des configurations (Spring Cloud Config)
+
+Les configurations des services sont externalisées dans le dossier `config-repo/` (versionné sur Git) et servies par un nouveau module `config-server`.
+
+| Module | Port | Rôle |
+|---|---|---|
+| config-server | 8888 | Serveur de configuration (Spring Cloud Config), lit le dossier `config-repo/` du dépôt Git |
+
+### Contenu de `config-repo/`
+
+| Fichier | Contenu |
+|---|---|
+| `application.properties` | Propriétés communes : URL Eureka, exposition actuator |
+| `service-inventaire.properties` | Port 8081, H2, JPA, jeu de données |
+| `service-approvisionnement.properties` | Port 8082, H2, JPA, jeu de données |
+| `service-alertes.properties` | Port 8083, H2, JPA, jeu de données |
+| `gateway-service.properties` | Port 8080, routage dynamique (discovery locator) |
+
+Eureka et le Config Server restent en configuration locale (problème d'amorçage : ils doivent démarrer avant les autres services).
+
+### Fonctionnement
+
+Chaque service ne contient plus que :
+
+```properties
+spring.application.name=<nom-du-service>
+spring.config.import=configserver:http://localhost:8888
+```
+
+Au démarrage, le service récupère auprès du Config Server le fichier `application.properties` (global) puis `<nom-du-service>.properties`. Sans Config Server, le service refuse de démarrer (fail-fast).
+
+### Ordre de démarrage
+
+1. `ServiceRegistryApplication` (Eureka, 8761)
+2. `ConfigServerApplication` (Config Server, 8888)
+3. `ServiceInventaireApplication`, `ServiceApprovisionnementApplication`, `ServiceAlertesApplication`
+4. `GatewayServiceApplication` (8080)
+
+### Vérification
+
+- http://localhost:8888/service-inventaire/default
+- http://localhost:8888/service-approvisionnement/default
+- http://localhost:8888/service-alertes/default
+- http://localhost:8888/gateway-service/default
+- Eureka (http://localhost:8761) : les 4 instances sont `UP`
+- http://localhost:8080/service-inventaire/products (via la Gateway)
+
+### Schéma d'architecture (V3)
+
+```mermaid
+flowchart TB
+    CR[("config-repo (Git)")]
+    CS["config-server :8888"]
+    EU["eureka-server :8761"]
+    GW["gateway-service :8080"]
+    INV["service-inventaire :8081"]
+    APP["service-approvisionnement :8082"]
+    ALT["service-alertes :8083"]
+
+    CS -->|"lit"| CR
+    GW -->|"config"| CS
+    INV -->|"config"| CS
+    APP -->|"config"| CS
+    ALT -->|"config"| CS
+
+    GW -->|"s'enregistre"| EU
+    INV -->|"s'enregistre"| EU
+    APP -->|"s'enregistre"| EU
+    ALT -->|"s'enregistre"| EU
+
+    GW -->|"routage dynamique"| INV
+    GW -->|"routage dynamique"| APP
+    GW -->|"routage dynamique"| ALT
+```
+

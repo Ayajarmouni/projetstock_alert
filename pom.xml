@@ -10,6 +10,8 @@
     <name>stock-alert</name>
     <description>Stock-Alert - gestion d'inventaire multi-entrepots avec reapprovisionnement automatique</description>
     <modules>
+        <module>eureka-server</module>
+        <module>gateway-service</module>
         <module>service-inventaire</module>
         <module>service-approvisionnement</module>
         <module>service-alertes</module>

@@ -352,3 +352,35 @@ Les tests devront couvrir les principaux scénarios métier :
 **Aya Jarmouni**
 
 Projet académique — Architecture microservices et automatisation de la gestion des stocks.
+
+## Jalon V2 — Infrastructure Spring Cloud (Eureka + Gateway)
+
+Deux nouveaux modules d'infrastructure, et les trois services métier s'enregistrent désormais auprès d'Eureka.
+
+| Module | Port | Rôle |
+|---|---|---|
+| eureka-server | 8761 | Registre de services (`service-registry`), dashboard http://localhost:8761 |
+| gateway-service | 8080 | API Gateway réactive (Spring Cloud Gateway WebFlux) |
+
+### Ordre de démarrage
+
+1. `ServiceRegistryApplication` (Eureka, 8761)
+2. `ServiceInventaireApplication`, `ServiceApprovisionnementApplication`, `ServiceAlertesApplication`
+3. `GatewayServiceApplication` (8080)
+
+### Routage dynamique (profil par défaut)
+
+Le *discovery locator* crée les routes à partir des services découverts, sans aucune route déclarée :
+
+- http://localhost:8080/service-inventaire/products
+- http://localhost:8080/service-inventaire/stock-levels
+- http://localhost:8080/service-approvisionnement/suppliers
+- http://localhost:8080/service-approvisionnement/purchase-orders
+- http://localhost:8080/service-alertes/thresholds
+- http://localhost:8080/service-alertes/stock-alerts
+
+Un nouveau service qui rejoint Eureka devient accessible via la Gateway sans modifier ni redémarrer celle-ci.
+
+### Routage statique (profil `statique`)
+
+Lancer la Gateway avec `-Dspring.profiles.active=statique` (VM options IntelliJ). Les chemins sont alors exposés sans préfixe de service : `http://localhost:8080/products`, `/suppliers`, `/thresholds`, etc. (`lb://` + Eureka pour résoudre les instances).

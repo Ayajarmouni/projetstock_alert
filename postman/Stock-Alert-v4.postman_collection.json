@@ -1,0 +1,3056 @@
+{
+  "info": {
+    "name": "Stock-Alert v4.0 (OpenFeign)",
+    "description": "Tests des 3 microservices + V4 : communication OpenFeign, création contrôlée, consultation enrichie, idempotence et erreurs de communication. Démarrer Eureka, Config Server, les 3 services (et la Gateway pour 1 requête), puis lancer les dossiers dans l'ordre avec le Collection Runner. Le dossier « V4-6 » est à lancer À PART, service-inventaire arrêté.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "inventaire",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "approvisionnement",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "alertes",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "gateway",
+      "value": "http://localhost:8080"
+    }
+  ],
+  "item": [
+    {
+      "name": "service-inventaire (8081)",
+      "item": [
+        {
+          "name": "Produits - cas valides",
+          "item": [
+            {
+              "name": "Lister les produits",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                      "pm.test(\"Liste non vide\", function () { pm.expect(pm.response.json().length).to.be.above(0); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventaire}}/products"
+              }
+            },
+            {
+              "name": "Consulter le produit 1",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventaire}}/products/1"
+              }
+            },
+            {
+              "name": "Créer un produit",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                      "pm.test(\"En-tête Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                      "pm.collectionVariables.set(\"productId\", pm.response.json().id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/products",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"Webcam Logitech C920\",\n  \"reference\": \"LOG-C920\",\n  \"categorie\": \"Accessoires\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Modifier le produit créé",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/products/{{productId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"Webcam Logitech C920 HD\",\n  \"reference\": \"LOG-C920\",\n  \"categorie\": \"Accessoires\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Produits - erreurs",
+          "item": [
+            {
+              "name": "Validation : nom vide, référence absente (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });",
+                      "pm.test(\"Détails des champs invalides\", function () { pm.expect(pm.response.json().details.length).to.be.above(0); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/products",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"\",\n  \"categorie\": \"Test\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "JSON mal formé (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/products",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"nom\": \"X\", ",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Référence déjà utilisée (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/products",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"Doublon\",\n  \"reference\": \"DELL-LAT-5440\",\n  \"categorie\": \"Informatique\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Identifiant non numérique (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventaire}}/products/abc"
+              }
+            },
+            {
+              "name": "Produit inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventaire}}/products/9999"
+              }
+            },
+            {
+              "name": "Modifier un produit inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/products/9999",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"X\",\n  \"reference\": \"X-1\",\n  \"categorie\": \"X\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Supprimer un produit inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{inventaire}}/products/9999"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Niveaux de stock - cas valides",
+          "item": [
+            {
+              "name": "Lister les niveaux de stock",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventaire}}/stock-levels"
+              }
+            },
+            {
+              "name": "Filtrer par produit et entrepôt",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventaire}}/stock-levels?productId=1&entrepot=Rabat"
+              }
+            },
+            {
+              "name": "Créer un niveau de stock (produit créé, Fès, qté 20, seuil 5)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                      "pm.test(\"En-tête Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                      "pm.collectionVariables.set(\"stockId\", pm.response.json().id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"entrepot\": \"Fès\",\n  \"quantite\": 20,\n  \"seuilAlerte\": 5\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Sortie de 5 unités",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                      "pm.test(\"Quantité = 15\", function () { pm.expect(pm.response.json().quantite).to.eql(15); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels/{{stockId}}/sortie",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"quantite\": 5\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Entrée de 10 unités",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                      "pm.test(\"Quantité = 25\", function () { pm.expect(pm.response.json().quantite).to.eql(25); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels/{{stockId}}/entree",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"quantite\": 10\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Niveaux de stock - erreurs",
+          "item": [
+            {
+              "name": "Validation : quantité négative (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 1,\n  \"entrepot\": \"Fès\",\n  \"quantite\": -3,\n  \"seuilAlerte\": 5\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Produit inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 9999,\n  \"entrepot\": \"Fès\",\n  \"quantite\": 1,\n  \"seuilAlerte\": 1\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Doublon produit/entrepôt (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"entrepot\": \"Fès\",\n  \"quantite\": 1,\n  \"seuilAlerte\": 1\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Sortie supérieure au stock (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels/{{stockId}}/sortie",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"quantite\": 1000\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Sortie de quantité nulle (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels/{{stockId}}/sortie",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"quantite\": 0\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Niveau de stock inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventaire}}/stock-levels/9999"
+              }
+            },
+            {
+              "name": "Sortie sur niveau inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventaire}}/stock-levels/9999/sortie",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"quantite\": 1\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Nettoyage / suppression",
+          "item": [
+            {
+              "name": "Supprimer un produit ayant du stock (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{inventaire}}/products/{{productId}}"
+              }
+            },
+            {
+              "name": "Supprimer le niveau de stock (204)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{inventaire}}/stock-levels/{{stockId}}"
+              }
+            },
+            {
+              "name": "Supprimer le produit (204)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{inventaire}}/products/{{productId}}"
+              }
+            },
+            {
+              "name": "Supprimer à nouveau le produit (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{inventaire}}/products/{{productId}}"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "service-approvisionnement (8082)",
+      "item": [
+        {
+          "name": "Fournisseurs",
+          "item": [
+            {
+              "name": "Lister les fournisseurs",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{approvisionnement}}/suppliers"
+              }
+            },
+            {
+              "name": "Consulter le fournisseur 1",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{approvisionnement}}/suppliers/1"
+              }
+            },
+            {
+              "name": "Créer un fournisseur",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                      "pm.test(\"En-tête Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                      "pm.collectionVariables.set(\"supplierId\", pm.response.json().id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{approvisionnement}}/suppliers",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"Rif Logistique\",\n  \"email\": \"ventes@rif-logistique.ma\",\n  \"delaiLivraisonJours\": 4\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Modifier le fournisseur créé",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{approvisionnement}}/suppliers/{{supplierId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"Rif Logistique SARL\",\n  \"email\": \"ventes@rif-logistique.ma\",\n  \"delaiLivraisonJours\": 2\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Validation : email invalide, délai négatif (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{approvisionnement}}/suppliers",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nom\": \"X\",\n  \"email\": \"pas-un-email\",\n  \"delaiLivraisonJours\": -1\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Fournisseur inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{approvisionnement}}/suppliers/9999"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Commandes d'achat - cycle de vie",
+          "item": [
+            {
+              "name": "Lister les commandes",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders"
+              }
+            },
+            {
+              "name": "Créer une commande -> BROUILLON",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                      "pm.test(\"En-tête Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                      "pm.collectionVariables.set(\"orderId\", pm.response.json().id);",
+                      "pm.test(\"Statut BROUILLON\", function () { pm.expect(pm.response.json().statut).to.eql(\"BROUILLON\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}"
+                  }
+                ],
+                "url": "{{approvisionnement}}/purchase-orders",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 30\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Modifier la commande (BROUILLON)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 45\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Livrer une commande BROUILLON (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId}}/livrer"
+              }
+            },
+            {
+              "name": "Émettre la commande -> EMISE",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                      "pm.test(\"Statut EMISE\", function () { pm.expect(pm.response.json().statut).to.eql(\"EMISE\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId}}/emettre"
+              }
+            },
+            {
+              "name": "Émettre une seconde fois (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId}}/emettre"
+              }
+            },
+            {
+              "name": "Modifier une commande EMISE (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 50\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Supprimer une commande EMISE (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId}}"
+              }
+            },
+            {
+              "name": "Livrer la commande -> LIVREE",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                      "pm.test(\"Statut LIVREE\", function () { pm.expect(pm.response.json().statut).to.eql(\"LIVREE\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId}}/livrer"
+              }
+            },
+            {
+              "name": "Filtrer par statut LIVREE",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders?statut=LIVREE"
+              }
+            },
+            {
+              "name": "Créer puis supprimer un brouillon : création",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                      "pm.test(\"En-tête Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                      "pm.collectionVariables.set(\"orderId2\", pm.response.json().id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}"
+                  }
+                ],
+                "url": "{{approvisionnement}}/purchase-orders",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 10\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Supprimer le brouillon (204)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/{{orderId2}}"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Commandes d'achat - erreurs",
+          "item": [
+            {
+              "name": "Validation : quantité nulle, entrepôt vide (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}"
+                  }
+                ],
+                "url": "{{approvisionnement}}/purchase-orders",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 1,\n  \"entrepot\": \"\",\n  \"quantiteCommandee\": 0\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Fournisseur inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{$guid}}"
+                  }
+                ],
+                "url": "{{approvisionnement}}/purchase-orders",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"supplierId\": 9999,\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 5\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Statut de filtre inconnu (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders?statut=INCONNU"
+              }
+            },
+            {
+              "name": "Commande inexistante (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/9999"
+              }
+            },
+            {
+              "name": "Émettre une commande inexistante (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": "{{approvisionnement}}/purchase-orders/9999/emettre"
+              }
+            },
+            {
+              "name": "Supprimer un fournisseur ayant des commandes (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{approvisionnement}}/suppliers/{{supplierId}}"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "service-alertes (8083)",
+      "item": [
+        {
+          "name": "Seuils",
+          "item": [
+            {
+              "name": "Lister les seuils",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{alertes}}/thresholds"
+              }
+            },
+            {
+              "name": "Consulter le seuil 1",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{alertes}}/thresholds/1"
+              }
+            },
+            {
+              "name": "Créer un seuil",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                      "pm.test(\"En-tête Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                      "pm.collectionVariables.set(\"thresholdId\", pm.response.json().id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/thresholds",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 4,\n  \"supplierId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"seuilMin\": 5,\n  \"quantiteReappro\": 20,\n  \"canal\": \"EMAIL\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Modifier le seuil créé",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/thresholds/{{thresholdId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 4,\n  \"supplierId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"seuilMin\": 6,\n  \"quantiteReappro\": 25,\n  \"canal\": \"SMS\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Doublon produit/entrepôt (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/thresholds",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 4,\n  \"supplierId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"seuilMin\": 5,\n  \"quantiteReappro\": 20,\n  \"canal\": \"EMAIL\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Validation : seuil négatif, quantité nulle (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/thresholds",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 3,\n  \"supplierId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"seuilMin\": -1,\n  \"quantiteReappro\": 0,\n  \"canal\": \"EMAIL\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Canal inconnu (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/thresholds",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 3,\n  \"supplierId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"seuilMin\": 1,\n  \"quantiteReappro\": 5,\n  \"canal\": \"FAX\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Seuil inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{alertes}}/thresholds/9999"
+              }
+            },
+            {
+              "name": "Modifier un seuil inexistant (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/thresholds/9999",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 4,\n  \"supplierId\": 1,\n  \"entrepot\": \"Fès\",\n  \"seuilMin\": 6,\n  \"quantiteReappro\": 25,\n  \"canal\": \"SMS\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Alertes",
+          "item": [
+            {
+              "name": "Lister les alertes ouvertes",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{alertes}}/stock-alerts?statut=OUVERTE"
+              }
+            },
+            {
+              "name": "Créer une alerte (niveau 2 < seuil 6) -> OUVERTE",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                      "pm.test(\"En-tête Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                      "pm.collectionVariables.set(\"alertId\", pm.response.json().id);",
+                      "pm.test(\"Statut OUVERTE\", function () { pm.expect(pm.response.json().statut).to.eql(\"OUVERTE\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/stock-alerts",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"thresholdId\": \"{{thresholdId}}\",\n  \"niveauDetecte\": 2\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Seconde alerte ouverte pour la même règle (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/stock-alerts",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"thresholdId\": \"{{thresholdId}}\",\n  \"niveauDetecte\": 1\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Niveau supérieur ou égal au seuil (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/stock-alerts",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"thresholdId\": 2,\n  \"niveauDetecte\": 50\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Validation : niveau négatif (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 400); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/stock-alerts",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"thresholdId\": 2,\n  \"niveauDetecte\": -4\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Règle de seuil inexistante (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{alertes}}/stock-alerts",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"thresholdId\": 9999,\n  \"niveauDetecte\": 1\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Alerte inexistante (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 404); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{alertes}}/stock-alerts/9999"
+              }
+            },
+            {
+              "name": "Supprimer un seuil ayant des alertes (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{alertes}}/thresholds/{{thresholdId}}"
+              }
+            },
+            {
+              "name": "Clôturer l'alerte -> CLOTUREE",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                      "pm.test(\"Statut CLOTUREE\", function () { pm.expect(pm.response.json().statut).to.eql(\"CLOTUREE\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": "{{alertes}}/stock-alerts/{{alertId}}/cloturer"
+              }
+            },
+            {
+              "name": "Clôturer une alerte déjà clôturée (409)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                      "pm.test(\"Corps d'erreur JSON (status, message, chemin)\", function () { var j = pm.response.json(); pm.expect(j).to.have.property(\"status\", 409); pm.expect(j).to.have.property(\"message\"); pm.expect(j).to.have.property(\"chemin\"); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": "{{alertes}}/stock-alerts/{{alertId}}/cloturer"
+              }
+            },
+            {
+              "name": "Supprimer l'alerte (204)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{alertes}}/stock-alerts/{{alertId}}"
+              }
+            },
+            {
+              "name": "Supprimer le seuil (204)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": "{{alertes}}/thresholds/{{thresholdId}}"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "V4-0 Préparation (service-inventaire)",
+      "item": [
+        {
+          "name": "Créer un produit de test",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"v4ProductId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{inventaire}}/products",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nom\": \"Chargeur USB-C 65W\",\n  \"reference\": \"CHG-65W-{{$timestamp}}\",\n  \"categorie\": \"Accessoires\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Stock BAS : Fès, quantité 4, seuil 10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"v4StockBasId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{inventaire}}/stock-levels",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantite\": 4,\n  \"seuilAlerte\": 10\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Stock SUFFISANT : Marrakech, quantité 100, seuil 10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"v4StockHautId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{inventaire}}/stock-levels",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Marrakech\",\n  \"quantite\": 100,\n  \"seuilAlerte\": 10\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V4-1 Création contrôlée et idempotence - succès",
+      "item": [
+        {
+          "name": "Créer une commande (stock bas) -> 201 BROUILLON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"Location présent\", function () { pm.response.to.have.header(\"Location\"); });",
+                  "pm.test(\"Statut BROUILLON\", function () { pm.expect(pm.response.json().statut).to.eql(\"BROUILLON\"); });",
+                  "pm.test(\"Pas d'en-tête Idempotent-Replayed\", function () { pm.expect(pm.response.headers.has(\"Idempotent-Replayed\")).to.be.false; });",
+                  "pm.collectionVariables.set(\"v4OrderId\", pm.response.json().id);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cleIdem', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleIdem}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 50\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Rejouer la MÊME requête avec la MÊME clé -> 200 (rejeu)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Idempotent-Replayed: true\", function () { pm.response.to.have.header(\"Idempotent-Replayed\",\"true\"); });",
+                  "pm.test(\"Même commande renvoyée\", function () { pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"v4OrderId\")); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleIdem}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 50\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Vérifier l'absence de doublon",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var pid = Number(pm.collectionVariables.get(\"v4ProductId\"));",
+                  "pm.test(\"Une seule commande pour ce produit à Fès\", function () { pm.expect(pm.response.json().filter(function (c) { return c.productId === pid && c.entrepot === \"Fès\"; }).length).to.eql(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders?supplierId=1"
+          }
+        },
+        {
+          "name": "Nouvelle clé, même contenu -> 201 (nouvelle commande)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"Nouvelle commande\", function () { pm.expect(pm.response.json().id).to.not.eql(pm.collectionVariables.get(\"v4OrderId\")); });",
+                  "pm.collectionVariables.set(\"v4OrderId2\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 50\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Modifier le brouillon (stock toujours bas) -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Quantité 60\", function () { pm.expect(pm.response.json().quantiteCommandee).to.eql(60); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders/{{v4OrderId2}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 60\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V4-2 Idempotence - erreurs",
+      "item": [
+        {
+          "name": "Même clé, contenu différent (quantité 99) -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"Message contient « contenu différent »\", function () { pm.expect(pm.response.json().message).to.include(\"contenu différent\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleIdem}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 99\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Sans en-tête Idempotency-Key -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"Message contient « Idempotency-Key »\", function () { pm.expect(pm.response.json().message).to.include(\"Idempotency-Key\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 50\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Clé vide -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"Message contient « Idempotency-Key »\", function () { pm.expect(pm.response.json().message).to.include(\"Idempotency-Key\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": " "
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 50\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Clé trop longue (101 caractères) -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"Message contient « 100 caractères »\", function () { pm.expect(pm.response.json().message).to.include(\"100 caractères\"); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cleLongue', 'k'.repeat(101));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleLongue}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 50\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V4-3 Contrôles OpenFeign - introuvable, refus métier",
+      "item": [
+        {
+          "name": "Produit inexistant dans service-inventaire -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"Message contient « Produit introuvable »\", function () { pm.expect(pm.response.json().message).to.include(\"Produit introuvable\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 9999,\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Produit sans stock dans cet entrepôt (Agadir) -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"Message contient « Aucun niveau de stock »\", function () { pm.expect(pm.response.json().message).to.include(\"Aucun niveau de stock\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Agadir\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Stock suffisant (100 > seuil 10) : refus métier -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"Message contient « suffisant »\", function () { pm.expect(pm.response.json().message).to.include(\"suffisant\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Marrakech\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Fournisseur inexistant (contrôle local) -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"Message contient « Fournisseur introuvable »\", function () { pm.expect(pm.response.json().message).to.include(\"Fournisseur introuvable\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 9999,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Validation : quantité nulle, entrepôt vide -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"Message contient « invalides »\", function () { pm.expect(pm.response.json().message).to.include(\"invalides\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"\",\n  \"quantiteCommandee\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Un refus n'enregistre rien : la même clé reste utilisable (stock suffisant puis corrigé)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cleRefus', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleRefus}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Marrakech\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Même clé après correction (stock Fès, bas) -> 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"v4OrderId3\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleRefus}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Modifier un brouillon vers un produit inexistant -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"Message contient « Produit introuvable »\", function () { pm.expect(pm.response.json().message).to.include(\"Produit introuvable\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders/{{v4OrderId3}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 9999,\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Modifier un brouillon vers un stock suffisant -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"Message contient « suffisant »\", function () { pm.expect(pm.response.json().message).to.include(\"suffisant\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders/{{v4OrderId3}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Marrakech\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V4-4 Consultation enrichie",
+      "item": [
+        {
+          "name": "Commande créée : fournisseur + produit + stock",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var b = pm.response.json();",
+                  "pm.test(\"Fournisseur enrichi\", function () { pm.expect(b.fournisseur.nom).to.eql(\"TechDistrib Maroc\"); });",
+                  "pm.test(\"Produit enrichi\", function () { pm.expect(b.produit.nom).to.eql(\"Chargeur USB-C 65W\"); });",
+                  "pm.test(\"Stock enrichi (4 / seuil 10)\", function () { pm.expect(b.stock.quantite).to.eql(4); pm.expect(b.stock.seuilAlerte).to.eql(10); });",
+                  "pm.test(\"Aucune alerte ouverte pour ce produit\", function () { pm.expect(b.alerteOuverte).to.be.null; });",
+                  "pm.test(\"Aucun avertissement\", function () { pm.expect(b.avertissements).to.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v4OrderId}}"
+          }
+        },
+        {
+          "name": "Commande 1 (données initiales) : alerte ouverte récupérée via service-alertes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var b = pm.response.json();",
+                  "pm.test(\"Produit : Dell Latitude\", function () { pm.expect(b.produit.reference).to.eql(\"DELL-LAT-5440\"); });",
+                  "pm.test(\"Stock Rabat : 8 / 10\", function () { pm.expect(b.stock.quantite).to.eql(8); pm.expect(b.stock.seuilAlerte).to.eql(10); });",
+                  "pm.test(\"Alerte OUVERTE enrichie\", function () { pm.expect(b.alerteOuverte.statut).to.eql(\"OUVERTE\"); pm.expect(b.alerteOuverte.entrepot).to.eql(\"Rabat\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/1"
+          }
+        },
+        {
+          "name": "Même consultation via la Gateway (8080)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Réponse enrichie via la Gateway\", function () { pm.expect(pm.response.json().produit).to.not.be.null; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gateway}}/service-approvisionnement/purchase-orders/1"
+          }
+        },
+        {
+          "name": "Commande inexistante -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"Message contient « introuvable »\", function () { pm.expect(pm.response.json().message).to.include(\"introuvable\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/9999"
+          }
+        }
+      ]
+    },
+    {
+      "name": "V4-5 Nettoyage",
+      "item": [
+        {
+          "name": "Supprimer un brouillon -> 204 (libère sa clé)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v4OrderId3}}"
+          }
+        },
+        {
+          "name": "Rejouer la clé libérée -> nouvelle création 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"Nouvel id\", function () { pm.expect(pm.response.json().id).to.not.eql(pm.collectionVariables.get(\"v4OrderId3\")); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleRefus}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": {{v4ProductId}},\n  \"entrepot\": \"Fès\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V4-6 Erreurs de communication - à lancer APRÈS avoir ARRÊTÉ service-inventaire",
+      "description": "Ce dossier suppose service-inventaire arrêté (et supprimé du registre Eureka ou non). À exécuter seul, après les autres dossiers.",
+      "item": [
+        {
+          "name": "Création impossible à contrôler -> 503",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 503\", function () { pm.response.to.have.status(503); });",
+                  "pm.test(\"Message contient « service-inventaire »\", function () { pm.expect(pm.response.json().message).to.include(\"service-inventaire\"); });",
+                  "pm.test(\"Message contient « indisponible »\", function () { pm.expect(pm.response.json().message).to.include(\"indisponible\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Consultation dégradée : 200 avec avertissements, sans produit ni stock",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var b = pm.response.json();",
+                  "pm.test(\"Commande locale toujours renvoyée\", function () { pm.expect(b.id).to.eql(1); pm.expect(b.fournisseur).to.not.be.null; });",
+                  "pm.test(\"Produit et stock absents\", function () { pm.expect(b.produit).to.be.null; pm.expect(b.stock).to.be.null; });",
+                  "pm.test(\"Avertissements renseignés\", function () { pm.expect(b.avertissements.length).to.be.at.least(2); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/1"
+          }
+        }
+      ]
+    }
+  ]
+}

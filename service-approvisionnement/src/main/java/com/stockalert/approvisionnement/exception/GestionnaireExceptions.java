@@ -26,6 +26,23 @@ public class GestionnaireExceptions {
         return reponse(HttpStatus.CONFLICT, ex.getMessage(), req, List.of());
     }
 
+    /** Ressource référencée absente d'un autre service (ex. produit inconnu de service-inventaire). */
+    @ExceptionHandler(RessourceDistanteIntrouvableException.class)
+    public ResponseEntity<ErreurDto> ressourceDistanteIntrouvable(RessourceDistanteIntrouvableException ex, HttpServletRequest req) {
+        return reponse(HttpStatus.NOT_FOUND, "Ressource introuvable dans " + ex.getService() + " : " + ex.getMessage(), req, List.of());
+    }
+
+    /** Service distant injoignable, trop lent ou en erreur : la création ne peut pas être contrôlée. */
+    @ExceptionHandler(ServiceDistantIndisponibleException.class)
+    public ResponseEntity<ErreurDto> serviceIndisponible(ServiceDistantIndisponibleException ex, HttpServletRequest req) {
+        return reponse(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), req, List.of());
+    }
+
+    @ExceptionHandler(ReponseDistanteInattendueException.class)
+    public ResponseEntity<ErreurDto> reponseInattendue(ReponseDistanteInattendueException ex, HttpServletRequest req) {
+        return reponse(HttpStatus.BAD_GATEWAY, ex.getMessage(), req, List.of());
+    }
+
     @ExceptionHandler(DonneesInvalidesException.class)
     public ResponseEntity<ErreurDto> donneesInvalides(DonneesInvalidesException ex, HttpServletRequest req) {
         return reponse(HttpStatus.BAD_REQUEST, ex.getMessage(), req, List.of());

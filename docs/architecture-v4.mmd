@@ -1,0 +1,22 @@
+flowchart TB
+    CLI["Client / Postman"]
+    GW["gateway-service :8080"]
+    EU["eureka-server :8761"]
+    CS["config-server :8888"]
+    APP["service-approvisionnement :8082<br/>PurchaseOrder, Supplier, IdempotencyRecord"]
+    INV["service-inventaire :8081<br/>Product, StockLevel"]
+    ALT["service-alertes :8083<br/>Threshold, StockAlert"]
+
+    CLI -->|"HTTP + Idempotency-Key"| GW
+    GW -->|"routage dynamique"| APP
+    GW -->|"routage dynamique"| INV
+    GW -->|"routage dynamique"| ALT
+
+    APP == "OpenFeign : GET /products/{id}<br/>GET /stock-levels?productId&entrepot" ==> INV
+    APP == "OpenFeign : GET /stock-alerts?statut=OUVERTE&productId" ==> ALT
+
+    APP -.->|"s'enregistre / résout les instances"| EU
+    INV -.-> EU
+    ALT -.-> EU
+    GW -.-> EU
+    APP -.->|"configuration"| CS

@@ -162,8 +162,9 @@ flowchart TB
 
 OpenFeign permet à un microservice d'appeler une API REST d'un autre microservice et d'obtenir une réponse immédiate.
 
-- **Approvisionnement → Inventaire :** consulter la quantité disponible avant de déclencher une commande d'achat.
-- **Alertes → Inventaire :** vérifier que le stock est sous le seuil avant de créer une alerte.
+- **Approvisionnement → Inventaire :** vérifier le produit et le stock avant d'enregistrer une commande d'achat *(implémenté au jalon V4)*.
+- **Approvisionnement → Alertes :** enrichir la consultation d'une commande avec l'alerte ouverte *(implémenté au jalon V4)*.
+- **Alertes → Inventaire :** vérifier que le stock est sous le seuil avant de créer une alerte *(à venir)*.
 
 ### Communication asynchrone — Apache Kafka
 
@@ -314,6 +315,8 @@ Toutes les erreurs renvoient le même corps JSON :
 
 ### Tests
 
+> Depuis le jalon V4, la collection à utiliser est `postman/Stock-Alert-v4.postman_collection.json` (voir la section V4). La collection V1 est conservée pour l'historique.
+
 Importer `postman/Stock-Alert-v1.postman_collection.json` dans Postman, démarrer les trois services, puis exécuter chaque dossier avec le **Collection Runner** (dans l'ordre : les identifiants créés sont enchaînés par des variables). La collection contient 72 requêtes avec assertions couvrant les cas valides, les erreurs de validation (400), les ressources inexistantes (404) et les conflits (409). Swagger UI permet aussi de tester manuellement chaque service.
 
 ### Choix de conception pour la V1
@@ -460,3 +463,166 @@ flowchart TB
     GW -->|"routage dynamique"| ALT
 ```
 
+
+## Jalon V4 — Communication entre microservices (OpenFeign)
+
+L'opération métier concernée est la **commande d'achat** (`PurchaseOrder`) du `service-approvisionnement`. Elle référence des ressources qui appartiennent à d'autres services (`productId`, `entrepot` → `service-inventaire` ; alerte liée → `service-alertes`). Le jalon V4 ajoute :
+
+- des **clients OpenFeign** (`InventaireClient`, `AlertesClient`) résolus par nom via Eureka ;
+- une **création contrôlée** : vérification de l'existence du produit, du stock dans l'entrepôt et de la règle métier avant l'enregistrement ;
+- une **consultation enrichie** : `GET /purchase-orders/{id}` renvoie aussi le fournisseur, le produit, le stock et l'alerte ouverte ;
+- une gestion des **ressources introuvables, refus métier et erreurs de communication** ;
+- une **clé d'idempotence** (`Idempotency-Key`) qui empêche les doubles créations.
+
+### Schéma d'architecture (V4)
+
+![Architecture V4](docs/architecture-v4.png)
+
+```mermaid
+flowchart TB
+    CLI["Client / Postman"]
+    GW["gateway-service :8080"]
+    EU["eureka-server :8761"]
+    CS["config-server :8888"]
+    APP["service-approvisionnement :8082<br/>PurchaseOrder, Supplier, IdempotencyRecord"]
+    INV["service-inventaire :8081<br/>Product, StockLevel"]
+    ALT["service-alertes :8083<br/>Threshold, StockAlert"]
+
+    CLI -->|"HTTP + Idempotency-Key"| GW
+    GW -->|"routage dynamique"| APP
+    GW -->|"routage dynamique"| INV
+    GW -->|"routage dynamique"| ALT
+
+    APP == "OpenFeign : GET /products/{id}<br/>GET /stock-levels?productId&entrepot" ==> INV
+    APP == "OpenFeign : GET /stock-alerts?statut=OUVERTE&productId" ==> ALT
+
+    APP -.->|"s'enregistre / résout les instances"| EU
+    INV -.-> EU
+    ALT -.-> EU
+    GW -.-> EU
+    APP -.->|"configuration"| CS
+```
+
+Les sources des schémas sont dans `docs/*.mmd` (exports PNG à côté).
+
+### Création contrôlée d'une commande
+
+`POST /purchase-orders` — en-tête **`Idempotency-Key` obligatoire** (≤ 100 caractères, par exemple un UUID).
+
+![Séquence de création](docs/sequence-creation.png)
+
+Contrôles effectués, dans l'ordre, **avant** tout enregistrement :
+
+| # | Contrôle | Où | Échec |
+|---|---|---|---|
+| 1 | Corps valide (`@Valid`) et en-tête `Idempotency-Key` présent | local | 400 |
+| 2 | Clé d'idempotence déjà connue ? | local | 200 (rejeu) ou 409 (contenu différent) |
+| 3 | Le fournisseur existe | base locale | 404 |
+| 4 | Le produit existe | **Feign** → `service-inventaire` `GET /products/{id}` | 404 (ou 503) |
+| 5 | Un niveau de stock existe pour ce produit **dans cet entrepôt** | **Feign** → `GET /stock-levels?productId=&entrepot=` | 404 (ou 503) |
+| 6 | **Règle métier** : on ne réapprovisionne que si `quantité ≤ seuilAlerte` | données du stock | **409** « Réapprovisionnement refusé : stock suffisant » |
+
+La commande est ensuite créée au statut `BROUILLON` et la clé est mémorisée **dans la même transaction**. `PUT /purchase-orders/{id}` applique les mêmes contrôles 3 à 6.
+
+### Idempotence
+
+| Situation | Résultat |
+|---|---|
+| Nouvelle clé | `201 Created` + `Location` |
+| Même clé, **même contenu** (rejeu, ex. nouvel essai après un délai dépassé) | `200 OK` + en-tête `Idempotent-Replayed: true`, la commande **d'origine** est renvoyée, rien n'est créé |
+| Même clé, **contenu différent** | `409 Conflict` |
+| Clé absente / vide / > 100 caractères | `400 Bad Request` |
+| Création refusée (404, 409, 503) | rien n'est enregistré : **la clé reste utilisable** une fois le problème corrigé |
+| Brouillon supprimé | sa clé est libérée |
+
+Mise en œuvre : table `idempotency_record` avec **contrainte d'unicité sur la clé** et empreinte SHA-256 du contenu (fournisseur, produit, entrepôt, quantité). Si deux requêtes identiques arrivent *simultanément*, la contrainte fait échouer la seconde, qui renvoie la commande de la première (testé dans `PurchaseOrderServiceTest`).
+
+### Consultation enrichie
+
+`GET /purchase-orders/{id}` — le contrat précédent est conservé, avec des champs en plus :
+
+![Séquence de consultation](docs/sequence-consultation.png)
+
+```json
+{
+  "id": 1, "supplierId": 1, "productId": 1, "entrepot": "Rabat",
+  "quantiteCommandee": 30, "statut": "BROUILLON", "date": "2026-11-10",
+  "fournisseur":   { "id": 1, "nom": "TechDistrib Maroc", "email": "commandes@techdistrib.ma", "delaiLivraisonJours": 3 },
+  "produit":       { "id": 1, "nom": "Ordinateur portable Dell Latitude 5440", "reference": "DELL-LAT-5440", "categorie": "Informatique" },
+  "stock":         { "id": 2, "productId": 1, "entrepot": "Rabat", "quantite": 8, "seuilAlerte": 10 },
+  "alerteOuverte": { "id": 1, "thresholdId": 1, "productId": 1, "entrepot": "Rabat", "niveauDetecte": 8, "statut": "OUVERTE" },
+  "avertissements": []
+}
+```
+
+La liste `GET /purchase-orders` reste non enrichie (évite N appels distants par ligne).
+
+### Gestion des erreurs
+
+| Cause | Détection | Code renvoyé |
+|---|---|---|
+| Ressource inexistante chez un autre service | `FeignErreurDecoder` : réponse 404 | **404** `Produit introuvable...` |
+| Refus métier (stock suffisant, clé réutilisée avec un autre contenu) | règle locale | **409** |
+| Service distant arrêté, aucune instance Eureka, délai dépassé, réponse 5xx | `RetryableException` / 5xx | **503** `Le service 'service-inventaire' est indisponible...` |
+| Réponse 4xx inattendue du service distant (contrat incompatible) | `FeignErreurDecoder` | **502** |
+
+- **Création** : si un contrôle ne peut pas être fait, la commande n'est **pas** enregistrée (503).
+- **Consultation** : un service distant en erreur **ne bloque pas** la lecture. La commande locale est renvoyée avec `200`, le bloc concerné vaut `null` et la cause est listée dans `avertissements`.
+- Délais : `connect-timeout=2000 ms`, `read-timeout=3000 ms` (`config-repo/service-approvisionnement.properties`), **2 tentatives** sur les erreurs réseau (appels `GET` rejouables sans risque).
+- Les appels distants se font **hors transaction** base de données.
+- Chaque appel Feign est journalisé (service, opération, durée).
+
+Le corps d'erreur reste celui défini en V1 (`timestamp`, `status`, `erreur`, `message`, `chemin`, `details`).
+
+### Structure ajoutée dans `service-approvisionnement`
+
+```text
+client/       InventaireClient, AlertesClient          # interfaces @FeignClient
+config/       FeignConfiguration, FeignErreurDecoder    # ErrorDecoder + Retryer
+dto/client/   ProduitDistantDto, StockDistantDto, AlerteDistanteDto
+dto/          PurchaseOrderDetailDto                    # consultation enrichie
+entite/       IdempotencyRecord                         # clé d'idempotence (unique)
+repository/   IdempotencyRecordRepository
+service/      ServicesDistantsGateway                   # point d'accès unique aux autres services
+              ControleCommandeService                   # règles métier avant enregistrement
+              PurchaseOrderDetailService                # consultation enrichie
+              PurchaseOrderService                      # création idempotente (modifiée)
+exception/    ServiceDistantException (+ 3 sous-classes), GestionnaireExceptions (étendu)
+```
+
+### Lancer et tester
+
+Ordre de démarrage : Eureka (8761) → Config Server (8888) → `service-inventaire`, `service-alertes`, `service-approvisionnement` → Gateway (8080).
+
+> Le Config Server lit les **commits** du dépôt GitHub configuré : après modification de `config-repo/`, faire un `git commit` + `git push` avant de relancer.
+
+Exemple (PowerShell) :
+
+```powershell
+# Création -> 201 (stock Rabat produit 1 : 8 <= seuil 10)
+curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: demo-001" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Rabat\",\"quantiteCommandee\":30}'
+# Même commande, même clé -> 200 + Idempotent-Replayed: true
+curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: demo-001" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Rabat\",\"quantiteCommandee\":30}'
+# Stock suffisant (Casablanca 25 > 10) -> 409
+curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: demo-002" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Casablanca\",\"quantiteCommandee\":30}'
+# Consultation enrichie
+curl.exe http://localhost:8082/purchase-orders/1
+```
+
+**Tests unitaires** (Mockito, sans démarrer les services) : `.\mvnw.cmd -pl service-approvisionnement test -Dtest="ControleCommandeServiceTest,PurchaseOrderServiceTest"`.
+
+**Tests Postman** : `postman/Stock-Alert-v4.postman_collection.json` (101 requêtes avec assertions : les 72 de la V1, adaptées, + 29 pour la V4 réparties dans les dossiers `V4-0` à `V4-6`). Les requêtes et réponses de chaque cas sont décrites dans [`docs/tests-postman-v4.md`](docs/tests-postman-v4.md). Pour obtenir les réponses réelles de votre exécution :
+
+```powershell
+.\postman\run-newman.ps1      # Windows  (ou ./postman/run-newman.sh)
+```
+
+Le dossier `V4-6` (erreurs de communication) se lance **seul**, après avoir arrêté `service-inventaire`.
+
+### Choix de conception pour la V4
+
+- Une règle métier simple et vérifiable : une commande d'achat n'a de sens que si le stock est **à ou sous** son seuil d'alerte.
+- Idempotence en base (et non en mémoire) pour survivre à plusieurs instances et aux requêtes concurrentes.
+- 409 pour tout refus métier, y compris la réutilisation d'une clé avec un autre contenu (cohérent avec la table des codes de la V1).
+- Consultation tolérante aux pannes, création stricte : lire une commande ne doit pas dépendre de la disponibilité des autres services, la créer sans contrôle ne doit pas être possible.
+- Pistes non traitées : disjoncteur (Resilience4j), expiration des clés d'idempotence, appel `Alertes → Inventaire`.

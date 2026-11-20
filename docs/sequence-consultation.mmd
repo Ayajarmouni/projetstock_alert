@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant A as service-approvisionnement
+    participant I as service-inventaire
+    participant L as service-alertes
+    C->>A: GET /purchase-orders/{id}
+    A->>A: commande + fournisseur (base locale)
+    opt commande absente
+        A-->>C: 404 Commande introuvable
+    end
+    A->>I: Feign GET /products/{productId}
+    A->>I: Feign GET /stock-levels?productId&entrepot
+    A->>L: Feign GET /stock-alerts?statut=OUVERTE&productId
+    Note over A: Un service distant en erreur n'empêche pas la consultation :<br/>le bloc correspondant vaut null et la cause est listée dans "avertissements"
+    A-->>C: 200 commande + fournisseur + produit + stock + alerteOuverte + avertissements

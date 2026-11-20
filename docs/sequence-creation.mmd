@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant A as service-approvisionnement
+    participant I as service-inventaire
+    C->>A: POST /purchase-orders<br/>Idempotency-Key: K
+    alt en-tête absent ou corps invalide
+        A-->>C: 400 Bad Request
+    else clé K déjà enregistrée
+        alt même contenu
+            A-->>C: 200 + Idempotent-Replayed: true (commande d'origine)
+        else contenu différent
+            A-->>C: 409 Conflict
+        end
+    else nouvelle clé
+        A->>A: fournisseur existe ? (base locale)
+        opt fournisseur absent
+            A-->>C: 404 Fournisseur introuvable
+        end
+        A->>I: Feign GET /products/{productId}
+        alt 404
+            A-->>C: 404 Produit introuvable
+        else service injoignable / 5xx / délai dépassé
+            A-->>C: 503 Service Unavailable
+        end
+        A->>I: Feign GET /stock-levels?productId&entrepot
+        alt aucun stock dans l'entrepôt
+            A-->>C: 404 Stock introuvable
+        else quantité > seuil d'alerte
+            A-->>C: 409 Réapprovisionnement refusé
+        else stock bas
+            A->>A: transaction : INSERT commande BROUILLON + INSERT clé K (unique)
+            A-->>C: 201 Created + Location
+        end
+    end

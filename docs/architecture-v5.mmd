@@ -1,0 +1,30 @@
+flowchart LR
+    CLI["Client / Postman"]
+    GW["gateway-service<br/>:8080"]
+    APP["service-approvisionnement :8082<br/><b>PRODUCTEUR</b><br/>PurchaseOrder, Supplier"]
+    INV["service-inventaire :8081"]
+    ALT["service-alertes :8083"]
+    NOT["service-notification :8084<br/><b>CONSOMMATEUR</b><br/>historique NotificationLog"]
+    INFRA["eureka-server :8761<br/>config-server :8888<br/>(enregistrement + configuration<br/>de tous les services)"]
+
+    subgraph DOCKER["Docker Compose"]
+        direction TB
+        subgraph RMQ["RabbitMQ - AMQP :5672 - console :15672"]
+            direction TB
+            EX{{"échange topic<br/>stockalert.events"}}
+            Q[("file durable<br/>notification.purchase-order")]
+            DLQ[("file des échecs<br/>notification.purchase-order.dlq")]
+        end
+        MP["Mailpit<br/>SMTP :1025<br/>Web + API :8025"]
+    end
+
+    CLI -->|"1. HTTP POST<br/>/purchase-orders/{id}/emettre"| GW
+    GW -->|"routage"| APP
+    APP ==>|"OpenFeign"| INV
+    APP ==>|"OpenFeign"| ALT
+    APP -->|"2. après COMMIT : JSON AMQP<br/>purchase-order.emise / .livree"| EX
+    EX -->|"purchase-order.*"| Q
+    Q -.->|"échec après 4 essais<br/>ou message invalide"| DLQ
+    Q -->|"3. consomme<br/>(ack après envoi)"| NOT
+    NOT -->|"4. SMTP"| MP
+    NOT -.-> INFRA

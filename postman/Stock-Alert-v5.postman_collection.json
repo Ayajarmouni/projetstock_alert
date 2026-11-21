@@ -1,0 +1,1076 @@
+{
+  "info": {
+    "name": "Stock-Alert v5.0 (RabbitMQ + notifications email)",
+    "description": "Tests du jalon V5 : notification par email après émission/livraison d'une commande d'achat (RabbitMQ + Mailpit). Prérequis : docker compose up -d, Eureka, Config Server, service-inventaire, service-alertes, service-approvisionnement, service-notification. Ordre : V5-0, V5-1, V5-2 (Collection Runner, données initiales fraîches). Puis V5-3a service-notification ARRÊTÉ, puis redémarrer le service et lancer V5-3b.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "approvisionnement",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "notification",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "mailpit",
+      "value": "http://localhost:8025"
+    },
+    {
+      "key": "rabbit",
+      "value": "http://localhost:15672"
+    },
+    {
+      "key": "rabbitUser",
+      "value": "stockalert"
+    },
+    {
+      "key": "rabbitPass",
+      "value": "stockalert"
+    }
+  ],
+  "item": [
+    {
+      "name": "V5-0 Préparation et santé",
+      "item": [
+        {
+          "name": "Santé de service-notification -> 200 UP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Statut UP\", function () { pm.expect(pm.response.json().status).to.eql(\"UP\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{notification}}/actuator/health"
+          }
+        },
+        {
+          "name": "Vider Mailpit -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "File RabbitMQ durable avec dead-letter exchange -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"File durable\", function () { pm.expect(pm.response.json().durable).to.eql(true); });",
+                  "pm.test(\"DLX configuré\", function () { pm.expect(pm.response.json().arguments[\"x-dead-letter-exchange\"]).to.eql(\"stockalert.events.dlx\"); });",
+                  "pm.test(\"Un consommateur est connecté\", function () { pm.expect(pm.response.json().consumers).to.be.at.least(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "File des messages morts (DLQ) existe -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order.dlq",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Purger la DLQ -> 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order.dlq/contents",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V5-1 Parcours complet - succès",
+      "item": [
+        {
+          "name": "1. Créer une commande (stock bas) -> 201 BROUILLON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"Statut BROUILLON\", function () { pm.expect(pm.response.json().statut).to.eql(\"BROUILLON\"); });",
+                  "pm.collectionVariables.set(\"v5OrderId\", pm.response.json().id);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cleIdem', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleIdem}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 30\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2. La simple création n'envoie aucun email -> total 0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Aucun email\", function () { pm.expect(pm.response.json().total).to.eql(0); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (1500 ms)",
+                  "setTimeout(function () {}, 1500);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "3. Émettre la commande -> 200 EMISE, réponse rapide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Statut EMISE\", function () { pm.expect(pm.response.json().statut).to.eql(\"EMISE\"); });",
+                  "pm.test(\"Réponse sans attendre l'email (< 2 s)\", function () { pm.expect(pm.response.responseTime).to.be.below(2000); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v5OrderId}}/emettre"
+          }
+        },
+        {
+          "name": "4. Mailpit reçoit l'email du fournisseur (après traitement asynchrone)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test(\"Un seul email\", function () { pm.expect(j.total).to.eql(1); });",
+                  "pm.test(\"Sujet : commande émise\", function () { pm.expect(j.messages[0].Subject).to.include(\"n°\" + pm.collectionVariables.get(\"v5OrderId\") + \" émise\"); });",
+                  "pm.test(\"Destinataire = email du fournisseur\", function () { pm.expect(j.messages[0].To[0].Address).to.eql(\"commandes@techdistrib.ma\"); });",
+                  "pm.test(\"Expéditeur\", function () { pm.expect(j.messages[0].From.Address).to.eql(\"stock-alert@stockalert.local\"); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (3000 ms)",
+                  "setTimeout(function () {}, 3000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "5. Contenu du dernier email (texte + HTML)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var m = pm.response.json();",
+                  "pm.test(\"Texte : quantité et entrepôt\", function () { pm.expect(m.Text).to.include(\"30\").and.to.include(\"Rabat\"); });",
+                  "pm.test(\"Texte : nom du produit (enrichi via OpenFeign)\", function () { pm.expect(m.Text).to.include(\"Dell Latitude\"); });",
+                  "pm.test(\"Version HTML présente\", function () { pm.expect(m.HTML).to.include(\"<table\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/message/latest"
+          }
+        },
+        {
+          "name": "6. Historique côté consommateur -> 1 notification ENVOYEE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var l = pm.response.json();",
+                  "pm.test(\"Une notification\", function () { pm.expect(l.length).to.eql(1); });",
+                  "pm.test(\"Type et statut\", function () { pm.expect(l[0].type).to.eql(\"PURCHASE_ORDER_EMISE\"); pm.expect(l[0].statut).to.eql(\"ENVOYEE\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{notification}}/notifications?purchaseOrderId={{v5OrderId}}"
+          }
+        },
+        {
+          "name": "7. Livrer la commande -> 200 LIVREE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Statut LIVREE\", function () { pm.expect(pm.response.json().statut).to.eql(\"LIVREE\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v5OrderId}}/livrer"
+          }
+        },
+        {
+          "name": "8. Second email : livraison confirmée",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test(\"Deux emails au total\", function () { pm.expect(j.total).to.eql(2); });",
+                  "pm.test(\"Le plus récent concerne la livraison\", function () { pm.expect(j.messages[0].Subject).to.include(\"livrée\"); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (3000 ms)",
+                  "setTimeout(function () {}, 3000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "9. File principale vidée (tout est consommé)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Aucun message en attente\", function () { pm.expect(pm.response.json().messages_ready).to.eql(0); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (6000 ms)",
+                  "setTimeout(function () {}, 6000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V5-2 Cas d'échec",
+      "item": [
+        {
+          "name": "1. Émettre une commande déjà émise -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"Message de conflit\", function () { pm.expect(pm.response.json().message).to.include(\"statut actuel LIVREE\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v5OrderId}}/emettre"
+          }
+        },
+        {
+          "name": "2. Émettre une commande inexistante -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 404\", function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/99999/emettre"
+          }
+        },
+        {
+          "name": "3. Créer un brouillon",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"Statut BROUILLON\", function () { pm.expect(pm.response.json().statut).to.eql(\"BROUILLON\"); });",
+                  "pm.collectionVariables.set(\"v5DraftId\", pm.response.json().id);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cleIdem', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleIdem}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 30\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "4. Livrer un brouillon (transition interdite) -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"Statut requis EMISE\", function () { pm.expect(pm.response.json().message).to.include(\"statut requis EMISE\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v5DraftId}}/livrer"
+          }
+        },
+        {
+          "name": "5. Aucun email pour les opérations refusées -> total toujours 2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Toujours 2 emails\", function () { pm.expect(pm.response.json().total).to.eql(2); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (3000 ms)",
+                  "setTimeout(function () {}, 3000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "6. Supprimer le brouillon -> 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v5DraftId}}"
+          }
+        },
+        {
+          "name": "7. Publier un événement invalide (email absent) -> routé",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Message routé vers la file\", function () { pm.expect(pm.response.json().routed).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{rabbit}}/api/exchanges/%2F/stockalert.events/publish",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"properties\": {\n    \"content_type\": \"application/json\"\n  },\n  \"routing_key\": \"purchase-order.emise\",\n  \"payload\": \"{\\\"eventId\\\":\\\"test-invalide-1\\\",\\\"type\\\":\\\"PURCHASE_ORDER_EMISE\\\",\\\"purchaseOrderId\\\":999,\\\"supplierNom\\\":\\\"Test\\\",\\\"supplierEmail\\\":null}\",\n  \"payload_encoding\": \"string\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "8. Publier un message non JSON -> routé",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Message routé vers la file\", function () { pm.expect(pm.response.json().routed).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{rabbit}}/api/exchanges/%2F/stockalert.events/publish",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"properties\": {\n    \"content_type\": \"application/json\"\n  },\n  \"routing_key\": \"purchase-order.emise\",\n  \"payload\": \"ceci n'est pas du JSON\",\n  \"payload_encoding\": \"string\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "9. Les 2 messages invalides arrivent dans la DLQ (après les nouvelles tentatives)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"2 messages en DLQ\", function () { pm.expect(pm.response.json().messages).to.be.at.least(2); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (14000 ms)",
+                  "setTimeout(function () {}, 14000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order.dlq",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "10. Toujours aucun email supplémentaire -> total 2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Toujours 2 emails\", function () { pm.expect(pm.response.json().total).to.eql(2); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "11. Purger la DLQ -> 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order.dlq/contents",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "V5-3a Traitement différé - ÉTAPE 1 : à lancer service-notification ARRÊTÉ",
+      "item": [
+        {
+          "name": "Vider Mailpit -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "1. Créer une commande -> 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"Statut BROUILLON\", function () { pm.expect(pm.response.json().statut).to.eql(\"BROUILLON\"); });",
+                  "pm.collectionVariables.set(\"v5DelayedId\", pm.response.json().id);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cleIdem', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cleIdem}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{approvisionnement}}/purchase-orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": 1,\n  \"productId\": 1,\n  \"entrepot\": \"Rabat\",\n  \"quantiteCommandee\": 30\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2. Émettre avec le consommateur arrêté -> 200 (l'API ne dépend pas de la notification)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Statut EMISE\", function () { pm.expect(pm.response.json().statut).to.eql(\"EMISE\"); });",
+                  "pm.test(\"Réponse rapide (< 2 s)\", function () { pm.expect(pm.response.responseTime).to.be.below(2000); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{approvisionnement}}/purchase-orders/{{v5DelayedId}}/emettre"
+          }
+        },
+        {
+          "name": "3. Le message attend dans la file : 1 prêt, 0 consommateur",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var q = pm.response.json();",
+                  "pm.test(\"Message en attente\", function () { pm.expect(q.messages_ready).to.be.at.least(1); });",
+                  "pm.test(\"Aucun consommateur\", function () { pm.expect(q.consumers).to.eql(0); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (6000 ms)",
+                  "setTimeout(function () {}, 6000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4. Aucun email envoyé pour l'instant -> total 0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Aucun email\", function () { pm.expect(pm.response.json().total).to.eql(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        }
+      ]
+    },
+    {
+      "name": "V5-3b Traitement différé - ÉTAPE 2 : à lancer APRÈS le redémarrage de service-notification",
+      "item": [
+        {
+          "name": "1. File vidée, consommateur reconnecté",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var q = pm.response.json();",
+                  "pm.test(\"Plus de message en attente\", function () { pm.expect(q.messages_ready).to.eql(0); });",
+                  "pm.test(\"Consommateur connecté\", function () { pm.expect(q.consumers).to.be.at.least(1); });"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// attente du traitement asynchrone (6000 ms)",
+                  "setTimeout(function () {}, 6000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rabbit}}/api/queues/%2F/notification.purchase-order",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPass}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2. L'email différé est arrivé dans Mailpit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test(\"Un email reçu\", function () { pm.expect(j.total).to.eql(1); });",
+                  "pm.test(\"Sujet : commande émise\", function () { pm.expect(j.messages[0].Subject).to.include(\"émise\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpit}}/api/v1/messages"
+          }
+        },
+        {
+          "name": "3. Historique côté consommateur",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Code HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Notification ENVOYEE\", function () { pm.expect(pm.response.json()[0].statut).to.eql(\"ENVOYEE\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{notification}}/notifications"
+          }
+        }
+      ]
+    }
+  ]
+}

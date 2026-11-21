@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    actor C as Client / Postman
+    participant A as service-approvisionnement
+    participant DB as Base H2
+    participant R as RabbitMQ
+    participant N as service-notification
+    participant M as Mailpit (SMTP 1025)
+
+    C->>A: POST /purchase-orders/{id}/emettre
+    activate A
+    A->>DB: BEGIN, statut = EMISE, COMMIT
+    A-->>C: 200 OK (la réponse n'attend pas l'email)
+    deactivate A
+    Note over A: après COMMIT, thread séparé
+    A--)R: publie JSON (purchase-order.emise)
+    R--)N: remet le message (si le consommateur est arrêté : il reste dans la file)
+    activate N
+    N->>N: valide, ignore si eventId déjà traité
+    N->>M: SMTP : email au fournisseur
+    M-->>N: 250 OK
+    N->>R: ack
+    deactivate N
+    Note over N,R: SMTP en panne : 4 essais puis DLQ. Message invalide : DLQ directe

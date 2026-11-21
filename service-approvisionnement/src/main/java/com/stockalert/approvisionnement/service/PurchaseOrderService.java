@@ -2,12 +2,15 @@ package com.stockalert.approvisionnement.service;
 
 import com.stockalert.approvisionnement.entite.IdempotencyRecord;
 import com.stockalert.approvisionnement.entite.PurchaseOrder;
+import com.stockalert.approvisionnement.entite.Supplier;
 import com.stockalert.approvisionnement.enums.StatutCommande;
 import com.stockalert.approvisionnement.exception.ConflitException;
 import com.stockalert.approvisionnement.exception.RessourceIntrouvableException;
+import com.stockalert.approvisionnement.messaging.CommandeEvenement;
 import com.stockalert.approvisionnement.repository.IdempotencyRecordRepository;
 import com.stockalert.approvisionnement.repository.PurchaseOrderRepository;
 import com.stockalert.approvisionnement.repository.SupplierRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -17,9 +20,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Unité de traitement du service : la commande d'achat.
@@ -36,10 +41,12 @@ public class PurchaseOrderService {
     private final IdempotencyRecordRepository idempotencyRepository;
     private final ControleCommandeService controle;
     private final TransactionTemplate transaction;
+    private final ApplicationEventPublisher evenements;
 
     public PurchaseOrderService(PurchaseOrderRepository purchaseOrderRepository, SupplierRepository supplierRepository,
                                 IdempotencyRecordRepository idempotencyRepository, ControleCommandeService controle,
-                                PlatformTransactionManager transactionManager) {
+                                PlatformTransactionManager transactionManager, ApplicationEventPublisher evenements) {
+        this.evenements = evenements;
         this.purchaseOrderRepository = purchaseOrderRepository;
         this.supplierRepository = supplierRepository;
         this.idempotencyRepository = idempotencyRepository;
@@ -140,7 +147,9 @@ public class PurchaseOrderService {
         PurchaseOrder commande = trouver(id);
         exigerStatut(commande, StatutCommande.BROUILLON, "émise");
         commande.setStatut(StatutCommande.EMISE);
-        return purchaseOrderRepository.save(commande);
+        PurchaseOrder emise = purchaseOrderRepository.save(commande);
+        annoncer(emise, CommandeEvenement.EMISE);
+        return emise;
     }
 
     /** EMISE -> LIVREE : réception de la livraison. */
@@ -149,8 +158,25 @@ public class PurchaseOrderService {
         PurchaseOrder commande = trouver(id);
         exigerStatut(commande, StatutCommande.EMISE, "livrée");
         commande.setStatut(StatutCommande.LIVREE);
-        // Jalon suivant : publication de l'événement Kafka "delivery-received" (mise à jour du stock, clôture de l'alerte).
-        return purchaseOrderRepository.save(commande);
+        // Jalon suivant : publication de l'événement "delivery-received" (mise à jour du stock, clôture de l'alerte).
+        PurchaseOrder livree = purchaseOrderRepository.save(commande);
+        annoncer(livree, CommandeEvenement.LIVREE);
+        return livree;
+    }
+
+    /**
+     * V5 : prépare l'événement de notification. Il n'est PAS envoyé ici : Spring le conserve jusqu'au commit de la
+     * transaction en cours, puis {@code CommandeEvenementPublisher} le publie sur RabbitMQ (hors requête HTTP).
+     * Si la transaction est annulée, l'événement est abandonné.
+     */
+    private void annoncer(PurchaseOrder commande, String type) {
+        Supplier fournisseur = supplierRepository.findById(commande.getSupplierId())
+                .orElseThrow(() -> new RessourceIntrouvableException(
+                        "Fournisseur introuvable avec l'id " + commande.getSupplierId()));
+        evenements.publishEvent(new CommandeEvenement(UUID.randomUUID().toString(), type, Instant.now().toString(),
+                commande.getId(), commande.getStatut().name(), String.valueOf(commande.getDate()),
+                fournisseur.getId(), fournisseur.getNom(), fournisseur.getEmail(), fournisseur.getDelaiLivraisonJours(),
+                commande.getProductId(), null, commande.getEntrepot(), commande.getQuantiteCommandee()));
     }
 
     private void exigerStatut(PurchaseOrder commande, StatutCommande attendu, String action) {

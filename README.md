@@ -196,7 +196,9 @@ La stack technique cible comprend :
 - **Langage :** Java 17 minimum
 - **Framework backend :** Spring Boot
 - **Communication synchrone :** Spring Cloud OpenFeign
-- **Messagerie asynchrone :** Apache Kafka
+- **Messagerie asynchrone :** RabbitMQ (notifications par email, jalon V5) ; Apache Kafka envisagé pour les événements métier entre services
+- **Envoi d'emails :** Spring Mail + Mailpit (faux serveur SMTP de développement)
+- **Conteneurs :** Docker Compose (RabbitMQ, Mailpit)
 - **Persistance :** Spring Data JPA
 - **Base de données :** H2 en mémoire (V1) — PostgreSQL envisagé pour la suite
 - **Gestion des dépendances :** Maven
@@ -213,7 +215,11 @@ projetstock_alert/
 ├── service-inventaire/          # port 8081 — Product, StockLevel
 ├── service-approvisionnement/   # port 8082 — Supplier, PurchaseOrder
 ├── service-alertes/             # port 8083 — Threshold, StockAlert
-├── postman/                     # collection de tests Postman
+├── service-notification/        # port 8084 — consommateur RabbitMQ, envoi d'emails (V5)
+├── eureka-server/, gateway-service/, config-server/, config-repo/   # infrastructure (V2, V3)
+├── docker-compose.yml           # RabbitMQ + Mailpit (V5)
+├── docs/                        # schémas (.mmd + .png) et tests Postman documentés
+├── postman/                     # collections de tests Postman
 └── README.md
 ```
 
@@ -626,3 +632,173 @@ Le dossier `V4-6` (erreurs de communication) se lance **seul**, après avoir arr
 - 409 pour tout refus métier, y compris la réutilisation d'une clé avec un autre contenu (cohérent avec la table des codes de la V1).
 - Consultation tolérante aux pannes, création stricte : lire une commande ne doit pas dépendre de la disponibilité des autres services, la créer sans contrôle ne doit pas être possible.
 - Pistes non traitées : disjoncteur (Resilience4j), expiration des clés d'idempotence, appel `Alertes → Inventaire`.
+
+## Jalon V5 — Notifications par email (RabbitMQ + Mailpit)
+
+**Opération métier notifiée :** le changement d'état d'une commande d'achat.
+
+| Opération validée | Événement RabbitMQ | Email envoyé au fournisseur |
+|---|---|---|
+| `POST /purchase-orders/{id}/emettre` (`BROUILLON` → `EMISE`) | `purchase-order.emise` | « Commande d'achat n°N émise » : produit, quantité, entrepôt de livraison, délai convenu |
+| `POST /purchase-orders/{id}/livrer` (`EMISE` → `LIVREE`) | `purchase-order.livree` | « Commande d'achat n°N livrée » : accusé de réception de la livraison |
+
+Le destinataire est l'adresse `Supplier.email` de la commande. Une opération refusée (409, 404) ne produit ni événement ni email.
+
+### Architecture
+
+![Architecture V5](docs/architecture-v5.png)
+
+![Séquence de notification](docs/sequence-notification.png)
+
+Les sources des schémas sont `docs/architecture-v5.mmd` et `docs/sequence-notification.mmd`.
+
+| Composant | Port | Rôle | Sens des échanges |
+|---|---|---|---|
+| service-approvisionnement | 8082 | **Producteur** : publie l'événement après le commit | → RabbitMQ (AMQP 5672) |
+| RabbitMQ | 5672 (AMQP), 15672 (console) | Broker : échange `stockalert.events`, file `notification.purchase-order`, DLQ | producteur → file → consommateur |
+| service-notification | 8084 | **Consommateur** : construit et envoie l'email, garde l'historique | ← RabbitMQ ; → SMTP 1025 |
+| Mailpit | 1025 (SMTP), 8025 (interface web + API) | Faux serveur SMTP : capture les emails sans les envoyer | ← service-notification |
+
+### Déclenchement : après le commit, sans attendre l'email
+
+1. `PurchaseOrderService.emettre/livrer` change le statut dans une transaction et publie un **événement Spring interne** (`CommandeEvenement`), sans toucher à RabbitMQ.
+2. `CommandeEvenementPublisher` est un `@TransactionalEventListener(phase = AFTER_COMMIT)` **asynchrone** (`@Async`) : l'événement n'est envoyé à RabbitMQ qu'une fois la transaction **validée** ; si elle est annulée, rien n'est publié.
+3. La réponse HTTP est renvoyée sans attendre RabbitMQ ni l'envoi de l'email : l'envoi SMTP se fait plus tard, dans `service-notification`.
+
+### Contrat JSON de l'événement
+
+Échange `stockalert.events` (topic, durable), clés `purchase-order.emise` / `purchase-order.livree`, `content-type: application/json`, messages persistants, `messageId` = `eventId`.
+
+```json
+{
+  "eventId": "0b8f6c1e-5a1d-4a0e-9d9b-2f5c5f0c1a11",
+  "type": "PURCHASE_ORDER_EMISE",
+  "occurredAt": "2026-11-21T00:41:07.512Z",
+  "purchaseOrderId": 4,
+  "statut": "EMISE",
+  "date": "2026-11-21",
+  "supplierId": 1,
+  "supplierNom": "TechDistrib Maroc",
+  "supplierEmail": "commandes@techdistrib.ma",
+  "delaiLivraisonJours": 3,
+  "productId": 1,
+  "produitNom": "Ordinateur portable Dell Latitude 5440",
+  "entrepot": "Rabat",
+  "quantiteCommandee": 30
+}
+```
+
+`produitNom` est ajouté si `service-inventaire` répond (OpenFeign, dans le thread de publication) ; sinon l'email indique « Produit n°1 ».
+
+### Fiabilité et gestion des erreurs
+
+| Situation | Comportement |
+|---|---|
+| Consommateur arrêté | Les messages restent dans la file **durable** `notification.purchase-order` ; ils sont traités au redémarrage (traitement différé). L'API métier répond normalement. |
+| Mailpit / SMTP arrêté | Échec d'envoi → **4 essais** (1 s, 2 s, 4 s) → rejet vers la file `notification.purchase-order.dlq` (via l'échange `stockalert.events.dlx`). Le message n'est jamais acquitté tant que l'email n'est pas parti. |
+| Message invalide (JSON illisible, email du fournisseur absent, type inconnu) | Rejet sans remise en file → **DLQ** (immédiat pour un JSON illisible, après les essais pour un champ manquant). |
+| Même événement reçu deux fois | `eventId` unique : un seul email, le doublon est ignoré (journalisé). |
+| RabbitMQ arrêté lors de l'émission | La commande est bien enregistrée et l'API répond `200` ; la publication échoue et est journalisée (voir limites). |
+
+### Fichiers de configuration
+
+Ils sont dans `config-repo/` (servis par le Config Server) :
+
+| Fichier | Contenu V5 |
+|---|---|
+| `service-approvisionnement.properties` | `spring.rabbitmq.host/port/username/password`, `connection-timeout=2000` |
+| `service-notification.properties` (nouveau) | port 8084, H2, RabbitMQ, nouvelles tentatives (`spring.rabbitmq.listener.simple.retry.*`), SMTP (`spring.mail.host=localhost`, `spring.mail.port=1025`), expéditeur `notification.expediteur` |
+
+Identifiants RabbitMQ (docker-compose et config-repo) : `stockalert` / `stockalert`.
+
+> Le Config Server lit les **commits** du dépôt GitHub configuré (`config-server/.../application.properties`) : après modification de `config-repo/`, faire un `git commit` + `git push` avant de relancer les services.
+
+### Commandes Docker
+
+```bash
+docker compose up -d          # démarre RabbitMQ et Mailpit
+docker compose ps             # état (healthy)
+docker compose logs -f rabbitmq mailpit
+docker compose stop mailpit   # simuler une panne SMTP   (docker compose start mailpit pour relancer)
+docker compose stop rabbitmq  # simuler une panne du broker
+docker compose down           # arrête et supprime les conteneurs (les files durables sont conservées dans le volume)
+docker compose down -v        # idem + supprime le volume (repart de zéro)
+```
+
+| Interface | URL | Identifiants |
+|---|---|---|
+| Console RabbitMQ | http://localhost:15672 | `stockalert` / `stockalert` |
+| Mailpit (boîte de réception) | http://localhost:8025 | — |
+
+### Démarrage et test pas à pas
+
+1. **Infrastructure :** `docker compose up -d`.
+2. **Services** (dans cet ordre) : Eureka (8761) → Config Server (8888) → `service-inventaire`, `service-alertes`, `service-approvisionnement`, `service-notification` → Gateway (8080).
+
+```powershell
+.\mvnw.cmd clean verify
+.\mvnw.cmd -pl service-notification spring-boot:run
+```
+
+3. **Parcours complet** (PowerShell, ou Postman) :
+
+```powershell
+# a) Créer une commande (stock Rabat produit 1 : 8 <= seuil 10) -> 201 BROUILLON (noter l'id)
+curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: v5-demo-001" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Rabat\",\"quantiteCommandee\":30}'
+# b) L'émettre -> 200 EMISE immédiatement ; l'email part ensuite
+curl.exe -i -X POST http://localhost:8082/purchase-orders/4/emettre
+# c) Voir l'email dans Mailpit : http://localhost:8025  (ou via l'API)
+curl.exe http://localhost:8025/api/v1/messages
+# d) Historique côté consommateur
+curl.exe http://localhost:8084/notifications
+```
+
+4. **Traitement différé :** arrêter `service-notification` → émettre une commande (`200`) → dans la console RabbitMQ, la file `notification.purchase-order` affiche **1 message prêt, 0 consommateur** → redémarrer `service-notification` → la file se vide et l'email apparaît dans Mailpit.
+5. **Cas d'échec :** émettre une commande déjà émise (`409`), une commande inconnue (`404`) → aucun email. `docker compose stop mailpit` puis émettre : après 4 essais le message est dans la DLQ (console RabbitMQ → *Queues* → `notification.purchase-order.dlq`).
+
+### Tests
+
+- **Unitaires** (Mockito, sans démarrer de service) :
+  `.\mvnw.cmd -pl service-approvisionnement,service-notification test -Dtest="PurchaseOrderServiceTest,NotificationServiceTest" -Dsurefire.failIfNoSpecifiedTests=false`
+- **Postman** : `postman/Stock-Alert-v5.postman_collection.json` (33 requêtes avec assertions) — `V5-0` préparation, `V5-1` parcours complet, `V5-2` échecs, `V5-3a/3b` traitement différé. Requêtes et réponses : [`docs/tests-postman-v5.md`](docs/tests-postman-v5.md). Exécution avec Newman et conservation des réponses réelles dans `postman/resultats/` :
+
+```powershell
+.\postman\run-newman-v5.ps1 principal   # V5-0, V5-1, V5-2   (ou ./postman/run-newman-v5.sh principal)
+.\postman\run-newman-v5.ps1 arret       # V5-3a : service-notification ARRÊTÉ
+# redémarrer service-notification, puis :
+.\postman\run-newman-v5.ps1 reprise     # V5-3b
+```
+
+Les dossiers `V5-1` et `V5-2` s'enchaînent (compteurs d'emails dans Mailpit) : lancer `V5-0` d'abord, sur des bases fraîches.
+
+### Structure ajoutée
+
+```text
+service-notification/
+├── config/       RabbitConfig (échange, files, DLQ, convertisseur JSON)
+├── listener/     CommandeEvenementListener (@RabbitListener)
+├── service/      NotificationService (validation, doublons, contenu), EmailService (JavaMailSender)
+├── entite/ repository/   NotificationLog (historique, eventId unique)
+├── controller/   GET /notifications, GET /notifications/{id}
+├── dto/ exception/       CommandeEvenement (contrat), ErreurDto, GestionnaireExceptions
+service-approvisionnement/messaging/
+├── CommandeEvenement (contrat JSON), RabbitConfig, CommandeEvenementPublisher (AFTER_COMMIT, @Async)
+```
+
+### Choix de conception et limites
+
+- **Après le commit, hors requête :** pas d'email pour une transaction annulée, et aucune latence ajoutée à l'API.
+- **File déclarée des deux côtés :** elle existe dès que l'un des services a démarré, donc aucun message n'est perdu avant le premier démarrage du consommateur.
+- **Une seule file** pour les deux types d'événements (clé `purchase-order.*`) ; une nouvelle opération métier = une nouvelle clé de routage.
+- **Limite connue :** si RabbitMQ est arrêté au moment de l'émission, la notification est perdue (la commande, elle, est valide). La solution complète est le patron *transactional outbox* (événement enregistré dans la même transaction, puis relayé), non implémenté ici.
+- Historique des notifications en H2 mémoire (recréé au démarrage), comme les autres services.
+- Pas de Dockerfile pour les microservices : seuls RabbitMQ et Mailpit sont conteneurisés.
+
+### Livraison Git
+
+```bash
+git add .
+git commit -m "V5 : notifications email via RabbitMQ et Mailpit"
+git tag V5.0
+git push origin main --tags
+```

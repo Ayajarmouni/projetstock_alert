@@ -1,0 +1,38 @@
+# Infrastructure de développement V5 : RabbitMQ (broker) + Mailpit (faux serveur SMTP).
+# Les microservices Spring Boot se lancent à part (IntelliJ ou ./mvnw), voir README.
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: stockalert-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP (microservices)
+      - "15672:15672"   # console de gestion http://localhost:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: stockalert
+      RABBITMQ_DEFAULT_PASS: stockalert
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq   # files durables conservées après "docker compose down" (sans -v)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: stockalert-mailpit
+    ports:
+      - "1025:1025"     # SMTP (service-notification)
+      - "8025:8025"     # interface web + API http://localhost:8025
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq_data:

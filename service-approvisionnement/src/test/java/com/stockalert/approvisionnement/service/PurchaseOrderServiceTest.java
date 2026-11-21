@@ -2,6 +2,8 @@ package com.stockalert.approvisionnement.service;
 
 import com.stockalert.approvisionnement.entite.IdempotencyRecord;
 import com.stockalert.approvisionnement.entite.PurchaseOrder;
+import com.stockalert.approvisionnement.entite.Supplier;
+import com.stockalert.approvisionnement.messaging.CommandeEvenement;
 import com.stockalert.approvisionnement.enums.StatutCommande;
 import com.stockalert.approvisionnement.exception.ConflitException;
 import com.stockalert.approvisionnement.exception.RessourceIntrouvableException;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.PlatformTransactionManager;
 
@@ -32,6 +35,7 @@ class PurchaseOrderServiceTest {
     private IdempotencyRecordRepository traces;
     private ControleCommandeService controle;
     private PurchaseOrderService service;
+    private ApplicationEventPublisher evenements;
 
     @BeforeEach
     void init() {
@@ -39,8 +43,9 @@ class PurchaseOrderServiceTest {
         fournisseurs = Mockito.mock(SupplierRepository.class);
         traces = Mockito.mock(IdempotencyRecordRepository.class);
         controle = Mockito.mock(ControleCommandeService.class);
+        evenements = Mockito.mock(ApplicationEventPublisher.class);
         service = new PurchaseOrderService(commandes, fournisseurs, traces, controle,
-                Mockito.mock(PlatformTransactionManager.class));
+                Mockito.mock(PlatformTransactionManager.class), evenements);
         when(fournisseurs.existsById(1L)).thenReturn(true);
         when(commandes.save(any(PurchaseOrder.class))).thenAnswer(inv -> {
             PurchaseOrder c = inv.getArgument(0);
@@ -145,5 +150,58 @@ class PurchaseOrderServiceTest {
         assertThatThrownBy(() -> service.creer(demande(30), "K3")).isInstanceOf(ServiceDistantIndisponibleException.class);
         verify(commandes, never()).save(any(PurchaseOrder.class));
         verify(traces, never()).saveAndFlush(any(IdempotencyRecord.class));
+    }
+
+    // ---------- V5 : événements de notification ----------
+
+    private PurchaseOrder commandeExistante(StatutCommande statut) {
+        PurchaseOrder c = demande(30);
+        c.setId(42L);
+        c.setStatut(statut);
+        c.setDate(java.time.LocalDate.of(2026, 11, 21));
+        when(commandes.findById(42L)).thenReturn(Optional.of(c));
+        Supplier f = new Supplier();
+        f.setId(1L);
+        f.setNom("TechDistrib Maroc");
+        f.setEmail("commandes@techdistrib.ma");
+        f.setDelaiLivraisonJours(3);
+        when(fournisseurs.findById(1L)).thenReturn(Optional.of(f));
+        return c;
+    }
+
+    @Test
+    void emettreAnnonceUnEvenementEmiseAvecLeFournisseur() {
+        commandeExistante(StatutCommande.BROUILLON);
+
+        service.emettre(42L);
+
+        ArgumentCaptor<CommandeEvenement> evt = ArgumentCaptor.forClass(CommandeEvenement.class);
+        verify(evenements).publishEvent(evt.capture());
+        assertThat(evt.getValue().type()).isEqualTo(CommandeEvenement.EMISE);
+        assertThat(evt.getValue().routingKey()).isEqualTo("purchase-order.emise");
+        assertThat(evt.getValue().purchaseOrderId()).isEqualTo(42L);
+        assertThat(evt.getValue().supplierEmail()).isEqualTo("commandes@techdistrib.ma");
+        assertThat(evt.getValue().statut()).isEqualTo("EMISE");
+        assertThat(evt.getValue().eventId()).isNotBlank();
+    }
+
+    @Test
+    void livrerAnnonceUnEvenementLivree() {
+        commandeExistante(StatutCommande.EMISE);
+
+        service.livrer(42L);
+
+        ArgumentCaptor<CommandeEvenement> evt = ArgumentCaptor.forClass(CommandeEvenement.class);
+        verify(evenements).publishEvent(evt.capture());
+        assertThat(evt.getValue().routingKey()).isEqualTo("purchase-order.livree");
+    }
+
+    @Test
+    void transitionRefuseeNAnnonceAucunEvenement() {
+        commandeExistante(StatutCommande.EMISE);
+
+        assertThatThrownBy(() -> service.emettre(42L)).isInstanceOf(ConflitException.class);
+
+        verify(evenements, never()).publishEvent(any(Object.class));
     }
 }

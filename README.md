@@ -1,63 +1,88 @@
-
 # Stock-Alert — Gestion intelligente des stocks
 
-Application distribuée de gestion des stocks multi-entrepôts avec détection des ruptures, alertes automatiques et réapprovisionnement via des commandes d'achat.
+Application distribuée de gestion des stocks multi-entrepôts avec détection des ruptures, alertes et réapprovisionnement via des commandes d'achat. Elle est construite en **microservices Spring Boot / Spring Cloud**.
+
+## Sommaire
+
+1. [Présentation du projet](#présentation-du-projet)
+2. [État d'avancement](#état-davancement)
+3. [Architecture fonctionnelle](#architecture-fonctionnelle)
+4. [Architecture technique](#architecture-technique)
+5. [Technologies](#technologies)
+6. [Structure du dépôt](#structure-du-dépôt)
+7. [Démarrage rapide](#démarrage-rapide)
+8. [API REST](#api-rest)
+9. [Jalons](#jalons) : [V1](#jalon-v1--services-métier-indépendants) · [V2](#jalon-v2--infrastructure-spring-cloud-eureka--gateway) · [V3](#jalon-v3--centralisation-des-configurations-spring-cloud-config) · [V4](#jalon-v4--communication-entre-microservices-openfeign) · [V5](#jalon-v5--notifications-par-email-rabbitmq--mailpit) · [V6](#jalon-v6--résilience-resilience4j)
+10. [Tests](#tests)
+11. [Limites connues et évolutions](#limites-connues-et-évolutions)
+12. [Auteur](#auteur)
 
 ## Présentation du projet
 
-**Stock-Alert** vise à automatiser le cycle de réapprovisionnement. Lorsqu'une sortie de stock fait passer la quantité disponible sous un seuil défini, une alerte est créée et un processus de commande auprès d'un fournisseur est déclenché.
-
-À la réception de la livraison, le stock est mis à jour et l'alerte correspondante est clôturée.
+**Stock-Alert** vise à automatiser le cycle de réapprovisionnement. Lorsque le stock d'un produit passe sous un seuil défini, une alerte est créée et un processus de commande auprès d'un fournisseur est déclenché. À la réception de la livraison, le stock est mis à jour et l'alerte est clôturée.
 
 ### Objectifs
 
 - Gérer les produits et les stocks de plusieurs entrepôts.
-- Détecter automatiquement les risques de rupture.
+- Détecter les risques de rupture grâce à des seuils.
 - Centraliser les fournisseurs et les commandes d'achat.
-- Automatiser le processus de réapprovisionnement.
-- Assurer la communication entre les microservices.
-- Garantir le suivi du cycle de vie des commandes et des alertes.
+- Faire communiquer les microservices de façon synchrone (OpenFeign) et asynchrone (RabbitMQ).
+- Rendre les appels entre services fiables (idempotence, délais, nouvelles tentatives, disjoncteur).
+- Suivre le cycle de vie des commandes et des alertes.
 
-> **Unité de traitement principale : la commande d'achat**
+> **Unité de traitement principale : la commande d'achat** (`PurchaseOrder`)
 >
 > Cycle de vie : `BROUILLON → EMISE → LIVREE`
 
+## État d'avancement
+
+| Jalon | Contenu | État |
+|---|---|---|
+| V1 | Trois services métier indépendants (inventaire, approvisionnement, alertes) | Fait |
+| V2 | Eureka (registre) + API Gateway | Fait |
+| V3 | Spring Cloud Config (configuration centralisée dans `config-repo/`) | Fait |
+| V4 | Communication synchrone OpenFeign, création contrôlée, idempotence | Fait |
+| V5 | Notifications email par RabbitMQ + Mailpit (`service-notification`) | Fait |
+| V6 | Résilience : Retry + Circuit Breaker (Resilience4j) sur les appels Feign | Fait (configuration et code) |
+| Suite | Événements métier Kafka (`stock-low`, `reorder-triggered`, `delivery-received`), appel Alertes → Inventaire | **Non implémenté** (voir [Limites](#limites-connues-et-évolutions)) |
+
 ## Architecture fonctionnelle
 
-Le système repose sur trois microservices métier, chacun responsable d'un domaine fonctionnel distinct.
+Trois microservices métier, chacun responsable d'un domaine, plus un service de notification.
 
-### 1. `service-inventaire`
+### 1. `service-inventaire` (port 8081)
 
-Responsable du référentiel des produits et de la gestion des quantités par entrepôt.
+Référentiel des produits et quantités par entrepôt.
 
 | Entité | Responsabilité | Attributs principaux |
 |---|---|---|
 | `Product` | Référentiel des produits | `id`, `nom`, `reference`, `categorie` |
 | `StockLevel` | Stock d'un produit dans un entrepôt | `id`, `productId`, `entrepot`, `quantite`, `seuilAlerte` |
 
-### 2. `service-approvisionnement`
+### 2. `service-approvisionnement` (port 8082)
 
-Service principal de gestion des fournisseurs et des commandes d'achat.
+Gestion des fournisseurs et des commandes d'achat. C'est le service qui appelle les autres (Feign) et qui publie les événements de notification (RabbitMQ).
 
 | Entité | Responsabilité | Attributs principaux |
 |---|---|---|
 | `Supplier` | Référentiel des fournisseurs | `id`, `nom`, `email`, `delaiLivraisonJours` |
 | `PurchaseOrder` | Commande d'achat fournisseur | `id`, `supplierId`, `productId`, `entrepot`, `quantiteCommandee`, `statut`, `date` |
+| `IdempotencyRecord` | Clé d'idempotence (V4) | clé unique, empreinte SHA-256 du contenu, commande associée |
 
-Chaque commande concerne un produit, un fournisseur, une quantité et un statut.
+### 3. `service-alertes` (port 8083)
 
-### 3. `service-alertes`
-
-Responsable de la définition des seuils et du suivi des ruptures de stock.
+Définition des seuils et suivi des ruptures.
 
 | Entité | Responsabilité | Attributs principaux |
 |---|---|---|
 | `Threshold` | Règle de réapprovisionnement | `id`, `productId`, `supplierId`, `entrepot`, `seuilMin`, `quantiteReappro`, `canal` |
-| `StockAlert` | Alerte de rupture | `id`, `thresholdId`, `productId`, `entrepot`, `niveauDetecte`, `statut` |
+| `StockAlert` | Alerte de rupture | `id`, `thresholdId`, `productId`, `entrepot`, `niveauDetecte`, `statut` (`OUVERTE` / `CLOTUREE`) |
 
-## Diagramme de classes UML
+### 4. `service-notification` (port 8084, V5)
 
-Ce diagramme présente les principales entités métier, leurs attributs et les relations logiques entre les produits, les stocks, les fournisseurs, les commandes et les alertes.
+Consomme les événements RabbitMQ, envoie les emails aux fournisseurs et garde l'historique (`NotificationLog`, `eventId` unique).
+
+### Diagramme de classes UML
 
 ```mermaid
 classDiagram
@@ -122,108 +147,118 @@ classDiagram
     StockLevel "1" --> "0..*" StockAlert : déclenche
 ```
 
-> Les relations de ce diagramme représentent le modèle métier cible. Elles devront correspondre aux associations et aux clés étrangères réellement implémentées dans les classes Java.
+> Les références entre services (`productId`, `supplierId`, `thresholdId`) sont de simples `Long` sans clé étrangère : chaque service reste autonome et possède sa propre base. Seules les relations à l'intérieur d'un même service sont de vraies associations JPA.
 
 ## Architecture technique
 
-L'architecture repose sur trois microservices métier qui communiquent de manière synchrone avec OpenFeign et de manière asynchrone à travers Apache Kafka.
+Architecture **telle qu'implémentée** (V6) :
 
 ```mermaid
 flowchart TB
-    INV["service-inventaire"]
-    ALT["service-alertes"]
-    APP["service-approvisionnement"]
-    K[("Apache Kafka")]
+    CLI["Client / Postman"]
+    GW["gateway-service :8080"]
+    EU["eureka-server :8761"]
+    CS["config-server :8888"]
+    CR[("config-repo (Git)")]
+    INV["service-inventaire :8081"]
+    APP["service-approvisionnement :8082"]
+    ALT["service-alertes :8083"]
+    NOT["service-notification :8084"]
+    MQ[("RabbitMQ :5672")]
+    MP["Mailpit SMTP :1025"]
 
-    APP -->|"OpenFeign : consulter le stock"| INV
-    ALT -->|"OpenFeign : vérifier le stock"| INV
+    CLI --> GW
+    GW -->|"routage"| INV
+    GW -->|"routage"| APP
+    GW -->|"routage"| ALT
+    GW -->|"routage"| NOT
 
-    INV -->|"Publie : stock-low"| K
-    K -->|"Consomme : stock-low"| ALT
+    APP == "OpenFeign + Retry + Circuit Breaker" ==> INV
+    APP == "OpenFeign + Retry + Circuit Breaker" ==> ALT
 
-    ALT -->|"Publie : reorder-triggered"| K
-    K -->|"Consomme : reorder-triggered"| APP
+    APP -->|"publie purchase-order.*"| MQ
+    MQ -->|"consomme"| NOT
+    NOT -->|"SMTP"| MP
 
-    APP -->|"Publie : delivery-received"| K
-    K -->|"Consomme : delivery-received"| INV
-    K -->|"Consomme : delivery-received"| ALT
+    CS -->|"lit"| CR
+    GW -.->|"config"| CS
+    INV -.->|"config"| CS
+    APP -.->|"config"| CS
+    ALT -.->|"config"| CS
+    NOT -.->|"config"| CS
+
+    GW -.->|"enregistrement"| EU
+    INV -.-> EU
+    APP -.-> EU
+    ALT -.-> EU
+    NOT -.-> EU
 ```
 
-### Rôle des microservices
+### Communication entre microservices
 
-- **Inventaire :** gère les produits, les stocks et la détection des seuils bas.
-- **Alertes :** gère les règles de seuil, crée les alertes et déclenche le réapprovisionnement.
-- **Approvisionnement :** gère les fournisseurs, les commandes d'achat et la réception des livraisons.
-- **Apache Kafka :** transporte les événements métier entre les services.
+**Synchrone — OpenFeign (implémenté, V4 + V6)**
 
-## Communication entre les microservices
+- Approvisionnement → Inventaire : vérifier l'existence du produit et du stock dans l'entrepôt avant d'enregistrer une commande.
+- Approvisionnement → Alertes : enrichir la consultation d'une commande avec l'alerte ouverte.
+- Alertes → Inventaire : vérifier le stock avant de créer une alerte (*à venir*, pas encore de client Feign dans `service-alertes`).
 
-### Communication synchrone — OpenFeign
+**Asynchrone — RabbitMQ (implémenté, V5)**
 
-OpenFeign permet à un microservice d'appeler une API REST d'un autre microservice et d'obtenir une réponse immédiate.
+| Événement (clé de routage) | Producteur | Consommateur | Traitement |
+|---|---|---|---|
+| `purchase-order.emise` | `service-approvisionnement` | `service-notification` | Email « commande émise » au fournisseur |
+| `purchase-order.livree` | `service-approvisionnement` | `service-notification` | Email « commande livrée » au fournisseur |
 
-- **Approvisionnement → Inventaire :** vérifier le produit et le stock avant d'enregistrer une commande d'achat *(implémenté au jalon V4)*.
-- **Approvisionnement → Alertes :** enrichir la consultation d'une commande avec l'alerte ouverte *(implémenté au jalon V4)*.
-- **Alertes → Inventaire :** vérifier que le stock est sous le seuil avant de créer une alerte *(à venir)*.
+### Architecture cible (non implémentée) : événements métier Kafka
 
-### Communication asynchrone — Apache Kafka
+Le cahier des charges prévoit à terme un bus d'événements Kafka entre les trois services métier. Le code ne contient que des commentaires `Jalon suivant` à ces endroits.
 
-Kafka permet de transmettre des événements métier sans imposer un appel direct entre le producteur et le consommateur.
-
-| Événement | Producteur | Consommateur(s) | Traitement |
+| Événement | Producteur | Consommateur(s) | Traitement prévu |
 |---|---|---|---|
 | `stock-low` | `service-inventaire` | `service-alertes` | Créer une alerte à partir de la règle de seuil |
 | `reorder-triggered` | `service-alertes` | `service-approvisionnement` | Créer et émettre une commande d'achat |
 | `delivery-received` | `service-approvisionnement` | `service-inventaire`, `service-alertes` | Mettre à jour le stock et clôturer l'alerte |
 
-## Scénario métier : du stock bas à la livraison
-
-1. Une sortie de stock est enregistrée dans un entrepôt.
-2. Le service d'inventaire détecte que la quantité passe sous le seuil d'alerte et publie l'événement `stock-low`.
-3. Le service d'alertes reçoit l'événement, vérifie le stock auprès du service d'inventaire et consulte la règle `Threshold`.
-4. Une `StockAlert` est créée pour le produit et l'entrepôt concernés.
-5. Le service d'alertes publie `reorder-triggered` avec les informations nécessaires au réapprovisionnement.
-6. Le service d'approvisionnement identifie le fournisseur et crée une `PurchaseOrder` au statut `BROUILLON`.
-7. La commande est transmise au fournisseur et son statut passe à `EMISE`.
-8. À la réception de la livraison, la commande passe à `LIVREE` et l'événement `delivery-received` est publié.
-9. Le service d'inventaire met à jour la quantité disponible.
-10. Le service d'alertes clôture l'alerte correspondante.
+Scénario cible : sortie de stock → seuil franchi → `stock-low` → alerte → `reorder-triggered` → commande `BROUILLON` → `EMISE` → livraison → `delivery-received` → stock mis à jour et alerte clôturée. Aujourd'hui, ces étapes se font manuellement via l'API (création d'alerte, création et émission de commande, livraison).
 
 ## Technologies
 
-La stack technique cible comprend :
-
-- **Langage :** Java 17 minimum
-- **Framework backend :** Spring Boot
-- **Communication synchrone :** Spring Cloud OpenFeign
-- **Messagerie asynchrone :** RabbitMQ (notifications par email, jalon V5) ; Apache Kafka envisagé pour les événements métier entre services
-- **Envoi d'emails :** Spring Mail + Mailpit (faux serveur SMTP de développement)
-- **Conteneurs :** Docker Compose (RabbitMQ, Mailpit)
-- **Persistance :** Spring Data JPA
-- **Base de données :** H2 en mémoire (V1) — PostgreSQL envisagé pour la suite
-- **Gestion des dépendances :** Maven
-- **Environnement de développement :** IntelliJ IDEA
-- **Tests d'API :** Postman, Swagger UI (springdoc-openapi)
-
-> Cette liste correspond aux technologies envisagées pour le projet. Elle doit être ajustée selon les dépendances et les composants réellement configurés dans le dépôt.
+| Domaine | Technologie |
+|---|---|
+| Langage | Java 17 |
+| Framework | Spring Boot 3.5.6 (Web, Validation, Data JPA, Actuator, AOP) |
+| Spring Cloud | 2025.0.0 : Eureka (registre), Gateway WebFlux, Config Server, OpenFeign |
+| Résilience | Resilience4j (Retry, Circuit Breaker) via Spring Cloud CircuitBreaker |
+| Messagerie | RabbitMQ 3.13 (Spring AMQP) |
+| Emails | Spring Mail + Mailpit (faux serveur SMTP de développement) |
+| Persistance | Spring Data JPA, H2 en mémoire (une base par service) |
+| Mapping | MapStruct (entité ↔ DTO) |
+| Documentation d'API | springdoc-openapi (Swagger UI) |
+| Conteneurs | Docker Compose (RabbitMQ, Mailpit) |
+| Build | Maven (wrapper `mvnw` fourni) |
+| Tests | JUnit 5, Mockito, Postman / Newman |
+| Environnement | IntelliJ IDEA |
 
 ## Structure du dépôt
 
 ```text
 projetstock_alert/
-├── pom.xml                      # POM agrégateur (3 modules)
+├── pom.xml                      # POM agrégateur (7 modules)
 ├── service-inventaire/          # port 8081 — Product, StockLevel
-├── service-approvisionnement/   # port 8082 — Supplier, PurchaseOrder
+├── service-approvisionnement/   # port 8082 — Supplier, PurchaseOrder (Feign, Resilience4j, producteur RabbitMQ)
 ├── service-alertes/             # port 8083 — Threshold, StockAlert
-├── service-notification/        # port 8084 — consommateur RabbitMQ, envoi d'emails (V5)
-├── eureka-server/, gateway-service/, config-server/, config-repo/   # infrastructure (V2, V3)
-├── docker-compose.yml           # RabbitMQ + Mailpit (V5)
+├── service-notification/        # port 8084 — consommateur RabbitMQ, envoi d'emails
+├── eureka-server/               # port 8761 — registre de services
+├── gateway-service/             # port 8080 — API Gateway
+├── config-server/               # port 8888 — serveur de configuration
+├── config-repo/                 # fichiers de configuration servis par le Config Server
+├── docker-compose.yml           # RabbitMQ + Mailpit
 ├── docs/                        # schémas (.mmd + .png) et tests Postman documentés
-├── postman/                     # collections de tests Postman
+├── postman/                     # collections Postman (V1, V4, V5) et scripts Newman
 └── README.md
 ```
 
-Chaque module est une application Spring Boot autonome, avec son propre POM, sa propre base H2 en mémoire et la même organisation en couches :
+Chaque service métier suit la même organisation en couches :
 
 ```text
 com.stockalert.<service>/
@@ -236,35 +271,61 @@ com.stockalert.<service>/
 └── exception/    # exceptions métier + @RestControllerAdvice
 ```
 
-## Jalon V1 — Services métier indépendants
-
-Livrables : trois services opérationnels (Controller / Service / Repository), DTO validés, API REST avec codes HTTP adaptés et gestion centralisée des erreurs, données propres à chaque service. Aucun appel entre services à ce stade : OpenFeign et Kafka arrivent aux jalons suivants (les points d'intégration sont signalés par des commentaires `Jalon suivant` dans le code).
+## Démarrage rapide
 
 ### Prérequis
 
-- JDK 17 ou supérieur, Maven (ou le wrapper `mvnw` fourni), IntelliJ IDEA.
+- JDK 17 ou supérieur
+- Docker (pour RabbitMQ et Mailpit)
+- Maven, ou le wrapper `mvnw` / `mvnw.cmd` fourni
+- Accès à GitHub : le Config Server lit les **commits** du dépôt configuré (voir ci-dessous)
 
-### Compiler et lancer
+### 1. Compiler
 
-```powershell
-.\mvnw.cmd clean verify
-
-.\mvnw.cmd -pl service-inventaire spring-boot:run
-.\mvnw.cmd -pl service-approvisionnement spring-boot:run
-.\mvnw.cmd -pl service-alertes spring-boot:run
+```bash
+./mvnw clean verify          # Linux / macOS
+.\mvnw.cmd clean verify      # Windows (PowerShell)
 ```
 
-Dans IntelliJ : ouvrir le `pom.xml` racine (*Load Maven Project*), puis lancer chaque classe `Service...Application` (trois configurations d'exécution distinctes).
+### 2. Lancer l'infrastructure Docker
 
-| Service | Port | Swagger UI | Console H2 |
-|---|---|---|---|
-| service-inventaire | 8081 | http://localhost:8081/swagger-ui/index.html | http://localhost:8081/h2-console (`jdbc:h2:mem:inventairedb`, user `sa`) |
-| service-approvisionnement | 8082 | http://localhost:8082/swagger-ui/index.html | http://localhost:8082/h2-console (`jdbc:h2:mem:approvisionnementdb`) |
-| service-alertes | 8083 | http://localhost:8083/swagger-ui/index.html | http://localhost:8083/h2-console (`jdbc:h2:mem:alertesdb`) |
+```bash
+docker compose up -d         # RabbitMQ + Mailpit
+docker compose ps            # état (healthy)
+```
 
-Les bases sont recréées et alimentées par `data.sql` à chaque démarrage.
+### 3. Lancer les services, dans cet ordre
 
-### Endpoints
+| # | Module | Commande |
+|---|---|---|
+| 1 | Eureka | `./mvnw -pl eureka-server spring-boot:run` |
+| 2 | Config Server | `./mvnw -pl config-server spring-boot:run` |
+| 3 | Services métier | `./mvnw -pl service-inventaire spring-boot:run`, puis `service-alertes`, `service-approvisionnement`, `service-notification` |
+| 4 | Gateway | `./mvnw -pl gateway-service spring-boot:run` |
+
+Dans IntelliJ : ouvrir le `pom.xml` racine (*Load Maven Project*) et lancer chaque classe `...Application` (une configuration d'exécution par module).
+
+> **Config Server et Git.** Le Config Server clone le dépôt défini dans `config-server/src/main/resources/application.properties` (`spring.cloud.config.server.git.uri`, branche `main`, dossier `config-repo`). Il lit les **commits**, pas votre dossier de travail : après toute modification de `config-repo/`, faites un `git commit` + `git push` avant de relancer les services. Sans Config Server, les services refusent de démarrer (*fail-fast*). Pour travailler hors ligne, adaptez l'URI vers un chemin local.
+
+### Ports et interfaces
+
+| Composant | Port | Interface |
+|---|---|---|
+| gateway-service | 8080 | routage vers tous les services |
+| service-inventaire | 8081 | [Swagger](http://localhost:8081/swagger-ui/index.html) · [H2](http://localhost:8081/h2-console) (`jdbc:h2:mem:inventairedb`, user `sa`) |
+| service-approvisionnement | 8082 | [Swagger](http://localhost:8082/swagger-ui/index.html) · [H2](http://localhost:8082/h2-console) (`jdbc:h2:mem:approvisionnementdb`) |
+| service-alertes | 8083 | [Swagger](http://localhost:8083/swagger-ui/index.html) · [H2](http://localhost:8083/h2-console) (`jdbc:h2:mem:alertesdb`) |
+| service-notification | 8084 | [Swagger](http://localhost:8084/swagger-ui/index.html) · [H2](http://localhost:8084/h2-console) (`jdbc:h2:mem:notificationdb`) |
+| eureka-server | 8761 | [Dashboard Eureka](http://localhost:8761) |
+| config-server | 8888 | ex. http://localhost:8888/service-inventaire/default |
+| RabbitMQ | 5672 / 15672 | [Console](http://localhost:15672) (`stockalert` / `stockalert`) |
+| Mailpit | 1025 / 8025 | [Boîte de réception](http://localhost:8025) |
+
+Les bases H2 sont recréées et alimentées par `data.sql` à chaque démarrage.
+
+## API REST
+
+Les URL ci-dessous sont celles des services. Par la Gateway (routage dynamique par défaut), préfixer par le nom du service : `http://localhost:8080/service-inventaire/products` (voir [V2](#jalon-v2--infrastructure-spring-cloud-eureka--gateway)).
 
 **service-inventaire**
 
@@ -283,10 +344,12 @@ Les bases sont recréées et alimentées par `data.sql` à chaque démarrage.
 |---|---|---|---|
 | GET / POST | `/suppliers` | Lister / créer un fournisseur | 200 / 201, 400 |
 | GET / PUT / DELETE | `/suppliers/{id}` | Consulter / modifier / supprimer | 200, 204, 400, 404, 409 (commandes rattachées) |
-| GET / POST | `/purchase-orders` | Lister (`?statut=&supplierId=`) / créer (statut `BROUILLON`) | 200 / 201, 400, 404 (fournisseur) |
-| GET / PUT / DELETE | `/purchase-orders/{id}` | Consulter / modifier / supprimer (`BROUILLON` seulement) | 200, 204, 400, 404, 409 |
-| POST | `/purchase-orders/{id}/emettre` | `BROUILLON` → `EMISE` | 200, 404, 409 |
-| POST | `/purchase-orders/{id}/livrer` | `EMISE` → `LIVREE` | 200, 404, 409 |
+| GET | `/purchase-orders` | Lister (`?statut=&supplierId=`), sans enrichissement | 200 |
+| POST | `/purchase-orders` | Créer (statut `BROUILLON`), en-tête `Idempotency-Key` obligatoire | 201, 200 (rejeu), 400, 404, 409, 502, 503 |
+| GET | `/purchase-orders/{id}` | Consulter, **enrichi** (fournisseur, produit, stock, alerte ouverte) | 200, 404 |
+| PUT / DELETE | `/purchase-orders/{id}` | Modifier / supprimer (`BROUILLON` seulement) | 200, 204, 400, 404, 409, 502, 503 |
+| POST | `/purchase-orders/{id}/emettre` | `BROUILLON` → `EMISE` (publie l'événement email) | 200, 404, 409 |
+| POST | `/purchase-orders/{id}/livrer` | `EMISE` → `LIVREE` (publie l'événement email) | 200, 404, 409 |
 
 **service-alertes**
 
@@ -297,6 +360,13 @@ Les bases sont recréées et alimentées par `data.sql` à chaque démarrage.
 | GET / POST | `/stock-alerts` | Lister (`?statut=&productId=`) / créer une alerte `OUVERTE` | 200 / 201, 400, 404 (règle), 409 (alerte ouverte existante) |
 | GET / DELETE | `/stock-alerts/{id}` | Consulter / supprimer | 200, 204, 404 |
 | POST | `/stock-alerts/{id}/cloturer` | `OUVERTE` → `CLOTUREE` | 200, 404, 409 |
+
+**service-notification**
+
+| Méthode | URL | Description | Codes |
+|---|---|---|---|
+| GET | `/notifications` | Historique des emails traités | 200 |
+| GET | `/notifications/{id}` | Détail d'une notification | 200, 404 |
 
 ### Format des erreurs
 
@@ -315,71 +385,35 @@ Toutes les erreurs renvoient le même corps JSON :
 
 | Code | Cas |
 |---|---|
-| 400 | Validation du DTO, JSON mal formé, énumération ou identifiant de type incorrect |
-| 404 | Ressource inexistante (y compris produit/fournisseur/règle référencé dans le corps) |
-| 409 | Conflit métier : doublon, transition de statut interdite, stock insuffisant, suppression d'une ressource encore utilisée |
+| 400 | Validation du DTO, JSON mal formé, énumération ou identifiant de type incorrect, en-tête `Idempotency-Key` absent |
+| 404 | Ressource inexistante (y compris produit/fournisseur/règle référencé, local ou distant) |
+| 409 | Conflit métier : doublon, transition de statut interdite, stock insuffisant, stock suffisant (pas de réapprovisionnement), clé d'idempotence réutilisée avec un autre contenu, suppression d'une ressource encore utilisée |
+| 502 | Réponse inattendue d'un service distant (contrat incompatible) |
+| 503 | Service distant indisponible, délai dépassé ou disjoncteur ouvert |
 
-### Tests
+## Jalons
 
-> Depuis le jalon V4, la collection à utiliser est `postman/Stock-Alert-v4.postman_collection.json` (voir la section V4). La collection V1 est conservée pour l'historique.
+### Jalon V1 — Services métier indépendants
 
-Importer `postman/Stock-Alert-v1.postman_collection.json` dans Postman, démarrer les trois services, puis exécuter chaque dossier avec le **Collection Runner** (dans l'ordre : les identifiants créés sont enchaînés par des variables). La collection contient 72 requêtes avec assertions couvrant les cas valides, les erreurs de validation (400), les ressources inexistantes (404) et les conflits (409). Swagger UI permet aussi de tester manuellement chaque service.
+Trois services opérationnels (Controller / Service / Repository), DTO validés, API REST avec codes HTTP adaptés, gestion centralisée des erreurs, données propres à chaque service. Aucun appel entre services à ce stade.
 
-### Choix de conception pour la V1
+Choix de conception :
 
-- Les références entre services (`productId`, `supplierId`, `thresholdId` hors du service propriétaire) sont de simples `Long` sans contrainte de clé étrangère : chaque service reste autonome. La vérification se fait au jalon suivant via OpenFeign.
+- Les références entre services sont de simples `Long` sans clé étrangère (autonomie des services).
 - Une `PurchaseOrder` naît toujours en `BROUILLON` (date du jour) ; seul un brouillon peut être modifié ou supprimé.
 - Une `StockAlert` reprend `productId` et `entrepot` de sa règle `Threshold` ; le niveau détecté doit être inférieur à `seuilMin`, et une seule alerte `OUVERTE` est admise par règle.
-- La livraison d'une commande (`livrer`) ne met pas encore le stock à jour et ne clôture pas l'alerte : ce sera le rôle de l'événement Kafka `delivery-received`.
+- La livraison d'une commande (`livrer`) ne met **pas** le stock à jour et ne clôture pas l'alerte : ce lien est prévu avec l'événement `delivery-received`, non implémenté.
 
-## Tests et validation
-
-Les tests devront couvrir les principaux scénarios métier :
-
-- Consultation du stock par produit et par entrepôt.
-- Détection d'un seuil d'alerte dépassé.
-- Création et clôture d'une alerte.
-- Déclenchement du réapprovisionnement.
-- Création et changement d'état d'une commande d'achat.
-- Réception d'une livraison et mise à jour du stock.
-- Communication entre les microservices via OpenFeign.
-- Publication et consommation des événements Kafka.
-- Gestion des erreurs et des événements reçus plusieurs fois.
-
-## Évolutions prévues
-
-- Ajouter des tests unitaires et des tests d'intégration.
-- Mettre en place la découverte des services avec Eureka si nécessaire.
-- Centraliser la configuration avec Spring Cloud Config si nécessaire.
-- Ajouter une gestion robuste des erreurs et des nouvelles tentatives Kafka.
-- Prévenir les doublons lors du traitement des événements.
-- Conteneuriser les microservices et leurs dépendances avec Docker Compose.
-- Ajouter un tableau de bord de suivi des stocks et des alertes.
-
-## Auteur
-
-**Aya Jarmouni**
-
-Projet académique — Architecture microservices et automatisation de la gestion des stocks.
-
-## Jalon V2 — Infrastructure Spring Cloud (Eureka + Gateway)
-
-Deux nouveaux modules d'infrastructure, et les trois services métier s'enregistrent désormais auprès d'Eureka.
+### Jalon V2 — Infrastructure Spring Cloud (Eureka + Gateway)
 
 | Module | Port | Rôle |
 |---|---|---|
-| eureka-server | 8761 | Registre de services (`service-registry`), dashboard http://localhost:8761 |
+| eureka-server | 8761 | Registre de services (`service-registry`) |
 | gateway-service | 8080 | API Gateway réactive (Spring Cloud Gateway WebFlux) |
 
-### Ordre de démarrage
+Tous les services s'enregistrent auprès d'Eureka.
 
-1. `ServiceRegistryApplication` (Eureka, 8761)
-2. `ServiceInventaireApplication`, `ServiceApprovisionnementApplication`, `ServiceAlertesApplication`
-3. `GatewayServiceApplication` (8080)
-
-### Routage dynamique (profil par défaut)
-
-Le *discovery locator* crée les routes à partir des services découverts, sans aucune route déclarée :
+**Routage dynamique (profil par défaut).** Le *discovery locator* crée les routes à partir des services découverts :
 
 - http://localhost:8080/service-inventaire/products
 - http://localhost:8080/service-inventaire/stock-levels
@@ -387,165 +421,79 @@ Le *discovery locator* crée les routes à partir des services découverts, sans
 - http://localhost:8080/service-approvisionnement/purchase-orders
 - http://localhost:8080/service-alertes/thresholds
 - http://localhost:8080/service-alertes/stock-alerts
+- http://localhost:8080/service-notification/notifications
 
-Un nouveau service qui rejoint Eureka devient accessible via la Gateway sans modifier ni redémarrer celle-ci.
+Un nouveau service qui rejoint Eureka devient accessible sans modifier ni redémarrer la Gateway.
 
-### Routage statique (profil `statique`)
+**Routage statique (profil `statique`).** Lancer la Gateway avec `-Dspring.profiles.active=statique`. Les chemins sont alors exposés sans préfixe : `/products/**`, `/stock-levels/**`, `/suppliers/**`, `/purchase-orders/**`, `/thresholds/**`, `/stock-alerts/**`, `/notifications/**` (`lb://` + Eureka).
 
-Lancer la Gateway avec `-Dspring.profiles.active=statique` (VM options IntelliJ). Les chemins sont alors exposés sans préfixe de service : `http://localhost:8080/products`, `/suppliers`, `/thresholds`, etc. (`lb://` + Eureka pour résoudre les instances).
+### Jalon V3 — Centralisation des configurations (Spring Cloud Config)
 
-## Jalon V3 — Centralisation des configurations (Spring Cloud Config)
+Les configurations sont externalisées dans `config-repo/` (versionné sur Git) et servies par `config-server` (port 8888).
 
-Les configurations des services sont externalisées dans le dossier `config-repo/` (versionné sur Git) et servies par un nouveau module `config-server`.
-
-| Module | Port | Rôle |
-|---|---|---|
-| config-server | 8888 | Serveur de configuration (Spring Cloud Config), lit le dossier `config-repo/` du dépôt Git |
-
-### Contenu de `config-repo/`
-
-| Fichier | Contenu |
+| Fichier de `config-repo/` | Contenu |
 |---|---|
-| `application.properties` | Propriétés communes : URL Eureka, exposition actuator |
+| `application.properties` | Commun à tous : URL Eureka, exposition Actuator (`health`, `info`) |
 | `service-inventaire.properties` | Port 8081, H2, JPA, jeu de données |
-| `service-approvisionnement.properties` | Port 8082, H2, JPA, jeu de données |
+| `service-approvisionnement.properties` | Port 8082, H2, JPA, Feign (V4), RabbitMQ (V5), Resilience4j (V6) |
 | `service-alertes.properties` | Port 8083, H2, JPA, jeu de données |
-| `gateway-service.properties` | Port 8080, routage dynamique (discovery locator) |
+| `service-notification.properties` | Port 8084, H2, RabbitMQ (consommateur, tentatives), SMTP (V5) |
+| `gateway-service.properties` | Port 8080, routage dynamique |
 
-Eureka et le Config Server restent en configuration locale (problème d'amorçage : ils doivent démarrer avant les autres services).
-
-### Fonctionnement
-
-Chaque service ne contient plus que :
+Eureka et le Config Server restent en configuration locale (problème d'amorçage). Chaque autre service ne contient plus que :
 
 ```properties
 spring.application.name=<nom-du-service>
 spring.config.import=configserver:http://localhost:8888
 ```
 
-Au démarrage, le service récupère auprès du Config Server le fichier `application.properties` (global) puis `<nom-du-service>.properties`. Sans Config Server, le service refuse de démarrer (fail-fast).
+Vérification : `http://localhost:8888/<nom-du-service>/default`, puis les instances `UP` dans Eureka.
 
-### Ordre de démarrage
+### Jalon V4 — Communication entre microservices (OpenFeign)
 
-1. `ServiceRegistryApplication` (Eureka, 8761)
-2. `ConfigServerApplication` (Config Server, 8888)
-3. `ServiceInventaireApplication`, `ServiceApprovisionnementApplication`, `ServiceAlertesApplication`
-4. `GatewayServiceApplication` (8080)
-
-### Vérification
-
-- http://localhost:8888/service-inventaire/default
-- http://localhost:8888/service-approvisionnement/default
-- http://localhost:8888/service-alertes/default
-- http://localhost:8888/gateway-service/default
-- Eureka (http://localhost:8761) : les 4 instances sont `UP`
-- http://localhost:8080/service-inventaire/products (via la Gateway)
-
-### Schéma d'architecture (V3)
-
-```mermaid
-flowchart TB
-    CR[("config-repo (Git)")]
-    CS["config-server :8888"]
-    EU["eureka-server :8761"]
-    GW["gateway-service :8080"]
-    INV["service-inventaire :8081"]
-    APP["service-approvisionnement :8082"]
-    ALT["service-alertes :8083"]
-
-    CS -->|"lit"| CR
-    GW -->|"config"| CS
-    INV -->|"config"| CS
-    APP -->|"config"| CS
-    ALT -->|"config"| CS
-
-    GW -->|"s'enregistre"| EU
-    INV -->|"s'enregistre"| EU
-    APP -->|"s'enregistre"| EU
-    ALT -->|"s'enregistre"| EU
-
-    GW -->|"routage dynamique"| INV
-    GW -->|"routage dynamique"| APP
-    GW -->|"routage dynamique"| ALT
-```
-
-
-## Jalon V4 — Communication entre microservices (OpenFeign)
-
-L'opération métier concernée est la **commande d'achat** (`PurchaseOrder`) du `service-approvisionnement`. Elle référence des ressources qui appartiennent à d'autres services (`productId`, `entrepot` → `service-inventaire` ; alerte liée → `service-alertes`). Le jalon V4 ajoute :
+L'opération métier concernée est la **création d'une commande d'achat**. Elle référence des ressources d'autres services (`productId`, `entrepot` → inventaire ; alerte liée → alertes). Le jalon ajoute :
 
 - des **clients OpenFeign** (`InventaireClient`, `AlertesClient`) résolus par nom via Eureka ;
-- une **création contrôlée** : vérification de l'existence du produit, du stock dans l'entrepôt et de la règle métier avant l'enregistrement ;
-- une **consultation enrichie** : `GET /purchase-orders/{id}` renvoie aussi le fournisseur, le produit, le stock et l'alerte ouverte ;
+- une **création contrôlée** : vérification du produit, du stock dans l'entrepôt et de la règle métier avant l'enregistrement ;
+- une **consultation enrichie** de `GET /purchase-orders/{id}` ;
 - une gestion des **ressources introuvables, refus métier et erreurs de communication** ;
-- une **clé d'idempotence** (`Idempotency-Key`) qui empêche les doubles créations.
-
-### Schéma d'architecture (V4)
+- une **clé d'idempotence** (`Idempotency-Key`) contre les doubles créations.
 
 ![Architecture V4](docs/architecture-v4.png)
 
-```mermaid
-flowchart TB
-    CLI["Client / Postman"]
-    GW["gateway-service :8080"]
-    EU["eureka-server :8761"]
-    CS["config-server :8888"]
-    APP["service-approvisionnement :8082<br/>PurchaseOrder, Supplier, IdempotencyRecord"]
-    INV["service-inventaire :8081<br/>Product, StockLevel"]
-    ALT["service-alertes :8083<br/>Threshold, StockAlert"]
-
-    CLI -->|"HTTP + Idempotency-Key"| GW
-    GW -->|"routage dynamique"| APP
-    GW -->|"routage dynamique"| INV
-    GW -->|"routage dynamique"| ALT
-
-    APP == "OpenFeign : GET /products/{id}<br/>GET /stock-levels?productId&entrepot" ==> INV
-    APP == "OpenFeign : GET /stock-alerts?statut=OUVERTE&productId" ==> ALT
-
-    APP -.->|"s'enregistre / résout les instances"| EU
-    INV -.-> EU
-    ALT -.-> EU
-    GW -.-> EU
-    APP -.->|"configuration"| CS
-```
-
 Les sources des schémas sont dans `docs/*.mmd` (exports PNG à côté).
 
-### Création contrôlée d'une commande
+#### Création contrôlée
 
 `POST /purchase-orders` — en-tête **`Idempotency-Key` obligatoire** (≤ 100 caractères, par exemple un UUID).
 
 ![Séquence de création](docs/sequence-creation.png)
-
-Contrôles effectués, dans l'ordre, **avant** tout enregistrement :
 
 | # | Contrôle | Où | Échec |
 |---|---|---|---|
 | 1 | Corps valide (`@Valid`) et en-tête `Idempotency-Key` présent | local | 400 |
 | 2 | Clé d'idempotence déjà connue ? | local | 200 (rejeu) ou 409 (contenu différent) |
 | 3 | Le fournisseur existe | base locale | 404 |
-| 4 | Le produit existe | **Feign** → `service-inventaire` `GET /products/{id}` | 404 (ou 503) |
-| 5 | Un niveau de stock existe pour ce produit **dans cet entrepôt** | **Feign** → `GET /stock-levels?productId=&entrepot=` | 404 (ou 503) |
-| 6 | **Règle métier** : on ne réapprovisionne que si `quantité ≤ seuilAlerte` | données du stock | **409** « Réapprovisionnement refusé : stock suffisant » |
+| 4 | Le produit existe | Feign → `service-inventaire` `GET /products/{id}` | 404 (ou 503) |
+| 5 | Un stock existe pour ce produit dans cet entrepôt | Feign → `GET /stock-levels?productId=&entrepot=` | 404 (ou 503) |
+| 6 | **Règle métier** : on ne réapprovisionne que si `quantité ≤ seuilAlerte` | données du stock | 409 « Réapprovisionnement refusé : stock suffisant » |
 
-La commande est ensuite créée au statut `BROUILLON` et la clé est mémorisée **dans la même transaction**. `PUT /purchase-orders/{id}` applique les mêmes contrôles 3 à 6.
+La commande est ensuite créée au statut `BROUILLON` et la clé est mémorisée **dans la même transaction**. `PUT /purchase-orders/{id}` applique les mêmes contrôles 3 à 6. Les appels distants se font hors transaction base de données.
 
-### Idempotence
+#### Idempotence
 
 | Situation | Résultat |
 |---|---|
 | Nouvelle clé | `201 Created` + `Location` |
-| Même clé, **même contenu** (rejeu, ex. nouvel essai après un délai dépassé) | `200 OK` + en-tête `Idempotent-Replayed: true`, la commande **d'origine** est renvoyée, rien n'est créé |
+| Même clé, **même contenu** (rejeu) | `200 OK` + en-tête `Idempotent-Replayed: true`, la commande d'origine est renvoyée |
 | Même clé, **contenu différent** | `409 Conflict` |
 | Clé absente / vide / > 100 caractères | `400 Bad Request` |
-| Création refusée (404, 409, 503) | rien n'est enregistré : **la clé reste utilisable** une fois le problème corrigé |
+| Création refusée (404, 409, 503) | rien n'est enregistré, la clé reste utilisable |
 | Brouillon supprimé | sa clé est libérée |
 
-Mise en œuvre : table `idempotency_record` avec **contrainte d'unicité sur la clé** et empreinte SHA-256 du contenu (fournisseur, produit, entrepôt, quantité). Si deux requêtes identiques arrivent *simultanément*, la contrainte fait échouer la seconde, qui renvoie la commande de la première (testé dans `PurchaseOrderServiceTest`).
+Mise en œuvre : table `idempotency_record` avec **contrainte d'unicité sur la clé** et empreinte SHA-256 du contenu (fournisseur, produit, entrepôt, quantité). Si deux requêtes identiques arrivent simultanément, la contrainte fait échouer la seconde, qui renvoie la commande de la première.
 
-### Consultation enrichie
-
-`GET /purchase-orders/{id}` — le contrat précédent est conservé, avec des champs en plus :
+#### Consultation enrichie
 
 ![Séquence de consultation](docs/sequence-consultation.png)
 
@@ -561,113 +509,59 @@ Mise en œuvre : table `idempotency_record` avec **contrainte d'unicité sur la 
 }
 ```
 
-La liste `GET /purchase-orders` reste non enrichie (évite N appels distants par ligne).
+La liste `GET /purchase-orders` reste non enrichie (évite N appels distants).
 
-### Gestion des erreurs
+#### Gestion des erreurs de communication
 
-| Cause | Détection | Code renvoyé |
+| Cause | Détection | Code |
 |---|---|---|
-| Ressource inexistante chez un autre service | `FeignErreurDecoder` : réponse 404 | **404** `Produit introuvable...` |
-| Refus métier (stock suffisant, clé réutilisée avec un autre contenu) | règle locale | **409** |
-| Service distant arrêté, aucune instance Eureka, délai dépassé, réponse 5xx | `RetryableException` / 5xx | **503** `Le service 'service-inventaire' est indisponible...` |
-| Réponse 4xx inattendue du service distant (contrat incompatible) | `FeignErreurDecoder` | **502** |
+| Ressource inexistante chez un autre service | `FeignErreurDecoder` : réponse 404 | 404 |
+| Refus métier (stock suffisant, clé réutilisée) | règle locale | 409 |
+| Service distant arrêté, aucune instance Eureka, délai dépassé, réponse 5xx | exception Feign | 503 |
+| Réponse 4xx inattendue du service distant | `FeignErreurDecoder` | 502 |
 
-- **Création** : si un contrôle ne peut pas être fait, la commande n'est **pas** enregistrée (503).
+- **Création** : si un contrôle ne peut pas être fait, la commande n'est **pas** enregistrée.
 - **Consultation** : un service distant en erreur **ne bloque pas** la lecture. La commande locale est renvoyée avec `200`, le bloc concerné vaut `null` et la cause est listée dans `avertissements`.
-- Délais : `connect-timeout=2000 ms`, `read-timeout=3000 ms` (`config-repo/service-approvisionnement.properties`), **2 tentatives** sur les erreurs réseau (appels `GET` rejouables sans risque).
-- Les appels distants se font **hors transaction** base de données.
+- Délais Feign : `connect-timeout=2000 ms`, `read-timeout=3000 ms`. Les nouvelles tentatives sont gérées depuis la V6 par Resilience4j (le `Retryer` Feign est désactivé).
 - Chaque appel Feign est journalisé (service, opération, durée).
 
-Le corps d'erreur reste celui défini en V1 (`timestamp`, `status`, `erreur`, `message`, `chemin`, `details`).
+#### Choix de conception
 
-### Structure ajoutée dans `service-approvisionnement`
-
-```text
-client/       InventaireClient, AlertesClient          # interfaces @FeignClient
-config/       FeignConfiguration, FeignErreurDecoder    # ErrorDecoder + Retryer
-dto/client/   ProduitDistantDto, StockDistantDto, AlerteDistanteDto
-dto/          PurchaseOrderDetailDto                    # consultation enrichie
-entite/       IdempotencyRecord                         # clé d'idempotence (unique)
-repository/   IdempotencyRecordRepository
-service/      ServicesDistantsGateway                   # point d'accès unique aux autres services
-              ControleCommandeService                   # règles métier avant enregistrement
-              PurchaseOrderDetailService                # consultation enrichie
-              PurchaseOrderService                      # création idempotente (modifiée)
-exception/    ServiceDistantException (+ 3 sous-classes), GestionnaireExceptions (étendu)
-```
-
-### Lancer et tester
-
-Ordre de démarrage : Eureka (8761) → Config Server (8888) → `service-inventaire`, `service-alertes`, `service-approvisionnement` → Gateway (8080).
-
-> Le Config Server lit les **commits** du dépôt GitHub configuré : après modification de `config-repo/`, faire un `git commit` + `git push` avant de relancer.
-
-Exemple (PowerShell) :
-
-```powershell
-# Création -> 201 (stock Rabat produit 1 : 8 <= seuil 10)
-curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: demo-001" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Rabat\",\"quantiteCommandee\":30}'
-# Même commande, même clé -> 200 + Idempotent-Replayed: true
-curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: demo-001" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Rabat\",\"quantiteCommandee\":30}'
-# Stock suffisant (Casablanca 25 > 10) -> 409
-curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: demo-002" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Casablanca\",\"quantiteCommandee\":30}'
-# Consultation enrichie
-curl.exe http://localhost:8082/purchase-orders/1
-```
-
-**Tests unitaires** (Mockito, sans démarrer les services) : `.\mvnw.cmd -pl service-approvisionnement test -Dtest="ControleCommandeServiceTest,PurchaseOrderServiceTest"`.
-
-**Tests Postman** : `postman/Stock-Alert-v4.postman_collection.json` (101 requêtes avec assertions : les 72 de la V1, adaptées, + 29 pour la V4 réparties dans les dossiers `V4-0` à `V4-6`). Les requêtes et réponses de chaque cas sont décrites dans [`docs/tests-postman-v4.md`](docs/tests-postman-v4.md). Pour obtenir les réponses réelles de votre exécution :
-
-```powershell
-.\postman\run-newman.ps1      # Windows  (ou ./postman/run-newman.sh)
-```
-
-Le dossier `V4-6` (erreurs de communication) se lance **seul**, après avoir arrêté `service-inventaire`.
-
-### Choix de conception pour la V4
-
-- Une règle métier simple et vérifiable : une commande d'achat n'a de sens que si le stock est **à ou sous** son seuil d'alerte.
+- Règle simple et vérifiable : une commande d'achat n'a de sens que si le stock est **à ou sous** son seuil d'alerte.
 - Idempotence en base (et non en mémoire) pour survivre à plusieurs instances et aux requêtes concurrentes.
-- 409 pour tout refus métier, y compris la réutilisation d'une clé avec un autre contenu (cohérent avec la table des codes de la V1).
-- Consultation tolérante aux pannes, création stricte : lire une commande ne doit pas dépendre de la disponibilité des autres services, la créer sans contrôle ne doit pas être possible.
-- Pistes non traitées : disjoncteur (Resilience4j), expiration des clés d'idempotence, appel `Alertes → Inventaire`.
+- Consultation tolérante aux pannes, création stricte.
 
-## Jalon V5 — Notifications par email (RabbitMQ + Mailpit)
+### Jalon V5 — Notifications par email (RabbitMQ + Mailpit)
 
 **Opération métier notifiée :** le changement d'état d'une commande d'achat.
 
 | Opération validée | Événement RabbitMQ | Email envoyé au fournisseur |
 |---|---|---|
-| `POST /purchase-orders/{id}/emettre` (`BROUILLON` → `EMISE`) | `purchase-order.emise` | « Commande d'achat n°N émise » : produit, quantité, entrepôt de livraison, délai convenu |
-| `POST /purchase-orders/{id}/livrer` (`EMISE` → `LIVREE`) | `purchase-order.livree` | « Commande d'achat n°N livrée » : accusé de réception de la livraison |
+| `POST /purchase-orders/{id}/emettre` (`BROUILLON` → `EMISE`) | `purchase-order.emise` | « Commande d'achat n°N émise » : produit, quantité, entrepôt, délai convenu |
+| `POST /purchase-orders/{id}/livrer` (`EMISE` → `LIVREE`) | `purchase-order.livree` | « Commande d'achat n°N livrée » : accusé de réception |
 
-Le destinataire est l'adresse `Supplier.email` de la commande. Une opération refusée (409, 404) ne produit ni événement ni email.
-
-### Architecture
+Le destinataire est `Supplier.email`. Une opération refusée (409, 404) ne produit ni événement ni email.
 
 ![Architecture V5](docs/architecture-v5.png)
 
 ![Séquence de notification](docs/sequence-notification.png)
 
-Les sources des schémas sont `docs/architecture-v5.mmd` et `docs/sequence-notification.mmd`.
+| Composant | Port | Rôle |
+|---|---|---|
+| service-approvisionnement | 8082 | **Producteur** : publie l'événement après le commit |
+| RabbitMQ | 5672 / 15672 | Broker : échange `stockalert.events`, file `notification.purchase-order`, DLQ |
+| service-notification | 8084 | **Consommateur** : construit et envoie l'email, garde l'historique |
+| Mailpit | 1025 / 8025 | Faux serveur SMTP : capture les emails sans les envoyer |
 
-| Composant | Port | Rôle | Sens des échanges |
-|---|---|---|---|
-| service-approvisionnement | 8082 | **Producteur** : publie l'événement après le commit | → RabbitMQ (AMQP 5672) |
-| RabbitMQ | 5672 (AMQP), 15672 (console) | Broker : échange `stockalert.events`, file `notification.purchase-order`, DLQ | producteur → file → consommateur |
-| service-notification | 8084 | **Consommateur** : construit et envoie l'email, garde l'historique | ← RabbitMQ ; → SMTP 1025 |
-| Mailpit | 1025 (SMTP), 8025 (interface web + API) | Faux serveur SMTP : capture les emails sans les envoyer | ← service-notification |
+#### Déclenchement : après le commit, sans attendre l'email
 
-### Déclenchement : après le commit, sans attendre l'email
+1. `PurchaseOrderService.emettre/livrer` change le statut dans une transaction et publie un **événement Spring interne** (`CommandeEvenement`).
+2. `CommandeEvenementPublisher` est un `@TransactionalEventListener(phase = AFTER_COMMIT)` **asynchrone** (`@Async`) : l'événement n'est envoyé à RabbitMQ qu'une fois la transaction validée.
+3. La réponse HTTP est renvoyée sans attendre RabbitMQ ni l'envoi de l'email.
 
-1. `PurchaseOrderService.emettre/livrer` change le statut dans une transaction et publie un **événement Spring interne** (`CommandeEvenement`), sans toucher à RabbitMQ.
-2. `CommandeEvenementPublisher` est un `@TransactionalEventListener(phase = AFTER_COMMIT)` **asynchrone** (`@Async`) : l'événement n'est envoyé à RabbitMQ qu'une fois la transaction **validée** ; si elle est annulée, rien n'est publié.
-3. La réponse HTTP est renvoyée sans attendre RabbitMQ ni l'envoi de l'email : l'envoi SMTP se fait plus tard, dans `service-notification`.
+#### Contrat JSON de l'événement
 
-### Contrat JSON de l'événement
-
-Échange `stockalert.events` (topic, durable), clés `purchase-order.emise` / `purchase-order.livree`, `content-type: application/json`, messages persistants, `messageId` = `eventId`.
+Échange `stockalert.events` (topic, durable), clés `purchase-order.emise` / `purchase-order.livree`, messages persistants, `messageId` = `eventId`.
 
 ```json
 {
@@ -688,63 +582,34 @@ Les sources des schémas sont `docs/architecture-v5.mmd` et `docs/sequence-notif
 }
 ```
 
-`produitNom` est ajouté si `service-inventaire` répond (OpenFeign, dans le thread de publication) ; sinon l'email indique « Produit n°1 ».
+`produitNom` est ajouté si `service-inventaire` répond ; sinon l'email indique « Produit n°1 ».
 
-### Fiabilité et gestion des erreurs
+#### Fiabilité et gestion des erreurs
 
 | Situation | Comportement |
 |---|---|
-| Consommateur arrêté | Les messages restent dans la file **durable** `notification.purchase-order` ; ils sont traités au redémarrage (traitement différé). L'API métier répond normalement. |
-| Mailpit / SMTP arrêté | Échec d'envoi → **4 essais** (1 s, 2 s, 4 s) → rejet vers la file `notification.purchase-order.dlq` (via l'échange `stockalert.events.dlx`). Le message n'est jamais acquitté tant que l'email n'est pas parti. |
-| Message invalide (JSON illisible, email du fournisseur absent, type inconnu) | Rejet sans remise en file → **DLQ** (immédiat pour un JSON illisible, après les essais pour un champ manquant). |
-| Même événement reçu deux fois | `eventId` unique : un seul email, le doublon est ignoré (journalisé). |
-| RabbitMQ arrêté lors de l'émission | La commande est bien enregistrée et l'API répond `200` ; la publication échoue et est journalisée (voir limites). |
+| Consommateur arrêté | Les messages restent dans la file durable ; ils sont traités au redémarrage. L'API répond normalement. |
+| Mailpit / SMTP arrêté | **4 essais** (1 s, 2 s, 4 s) puis rejet vers la file `notification.purchase-order.dlq` (échange `stockalert.events.dlx`). |
+| Message invalide (JSON illisible, email absent, type inconnu) | Rejet sans remise en file → DLQ. |
+| Même événement reçu deux fois | `eventId` unique : un seul email, le doublon est ignoré. |
+| RabbitMQ arrêté lors de l'émission | La commande est enregistrée et l'API répond `200` ; la publication échoue et est journalisée (voir limites). |
 
-### Fichiers de configuration
-
-Ils sont dans `config-repo/` (servis par le Config Server) :
-
-| Fichier | Contenu V5 |
-|---|---|
-| `service-approvisionnement.properties` | `spring.rabbitmq.host/port/username/password`, `connection-timeout=2000` |
-| `service-notification.properties` (nouveau) | port 8084, H2, RabbitMQ, nouvelles tentatives (`spring.rabbitmq.listener.simple.retry.*`), SMTP (`spring.mail.host=localhost`, `spring.mail.port=1025`), expéditeur `notification.expediteur` |
-
-Identifiants RabbitMQ (docker-compose et config-repo) : `stockalert` / `stockalert`.
-
-> Le Config Server lit les **commits** du dépôt GitHub configuré (`config-server/.../application.properties`) : après modification de `config-repo/`, faire un `git commit` + `git push` avant de relancer les services.
-
-### Commandes Docker
+#### Commandes Docker utiles
 
 ```bash
 docker compose up -d          # démarre RabbitMQ et Mailpit
-docker compose ps             # état (healthy)
 docker compose logs -f rabbitmq mailpit
-docker compose stop mailpit   # simuler une panne SMTP   (docker compose start mailpit pour relancer)
+docker compose stop mailpit   # simuler une panne SMTP (docker compose start mailpit pour relancer)
 docker compose stop rabbitmq  # simuler une panne du broker
-docker compose down           # arrête et supprime les conteneurs (les files durables sont conservées dans le volume)
-docker compose down -v        # idem + supprime le volume (repart de zéro)
+docker compose down           # arrête les conteneurs (files durables conservées)
+docker compose down -v        # idem + supprime le volume
 ```
 
-| Interface | URL | Identifiants |
-|---|---|---|
-| Console RabbitMQ | http://localhost:15672 | `stockalert` / `stockalert` |
-| Mailpit (boîte de réception) | http://localhost:8025 | — |
-
-### Démarrage et test pas à pas
-
-1. **Infrastructure :** `docker compose up -d`.
-2. **Services** (dans cet ordre) : Eureka (8761) → Config Server (8888) → `service-inventaire`, `service-alertes`, `service-approvisionnement`, `service-notification` → Gateway (8080).
-
-```powershell
-.\mvnw.cmd clean verify
-.\mvnw.cmd -pl service-notification spring-boot:run
-```
-
-3. **Parcours complet** (PowerShell, ou Postman) :
+#### Parcours complet (PowerShell, ou Postman)
 
 ```powershell
 # a) Créer une commande (stock Rabat produit 1 : 8 <= seuil 10) -> 201 BROUILLON (noter l'id)
-curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: v5-demo-001" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Rabat\",\"quantiteCommandee\":30}'
+curl.exe -i -X POST http://localhost:8082/purchase-orders -H "Content-Type: application/json" -H "Idempotency-Key: demo-001" -d '{\"supplierId\":1,\"productId\":1,\"entrepot\":\"Rabat\",\"quantiteCommandee\":30}'
 # b) L'émettre -> 200 EMISE immédiatement ; l'email part ensuite
 curl.exe -i -X POST http://localhost:8082/purchase-orders/4/emettre
 # c) Voir l'email dans Mailpit : http://localhost:8025  (ou via l'API)
@@ -753,52 +618,144 @@ curl.exe http://localhost:8025/api/v1/messages
 curl.exe http://localhost:8084/notifications
 ```
 
-4. **Traitement différé :** arrêter `service-notification` → émettre une commande (`200`) → dans la console RabbitMQ, la file `notification.purchase-order` affiche **1 message prêt, 0 consommateur** → redémarrer `service-notification` → la file se vide et l'email apparaît dans Mailpit.
-5. **Cas d'échec :** émettre une commande déjà émise (`409`), une commande inconnue (`404`) → aucun email. `docker compose stop mailpit` puis émettre : après 4 essais le message est dans la DLQ (console RabbitMQ → *Queues* → `notification.purchase-order.dlq`).
+Autres scénarios : arrêter `service-notification`, émettre une commande (`200`) et constater dans la console RabbitMQ 1 message prêt, 0 consommateur, puis redémarrer le service (la file se vide, l'email apparaît) ; ou arrêter Mailpit pour provoquer le passage en DLQ.
 
-### Tests
+#### Choix de conception et limites
 
-- **Unitaires** (Mockito, sans démarrer de service) :
-  `.\mvnw.cmd -pl service-approvisionnement,service-notification test -Dtest="PurchaseOrderServiceTest,NotificationServiceTest" -Dsurefire.failIfNoSpecifiedTests=false`
-- **Postman** : `postman/Stock-Alert-v5.postman_collection.json` (33 requêtes avec assertions) — `V5-0` préparation, `V5-1` parcours complet, `V5-2` échecs, `V5-3a/3b` traitement différé. Requêtes et réponses : [`docs/tests-postman-v5.md`](docs/tests-postman-v5.md). Exécution avec Newman et conservation des réponses réelles dans `postman/resultats/` :
+- Après le commit, hors requête : pas d'email pour une transaction annulée, aucune latence ajoutée à l'API.
+- File déclarée des deux côtés : aucun message perdu avant le premier démarrage du consommateur.
+- Une seule file pour les deux types d'événements (clé `purchase-order.*`).
+- **Limite connue :** si RabbitMQ est arrêté au moment de l'émission, la notification est perdue (la commande reste valide). La solution complète est le patron *transactional outbox*, non implémenté.
+- Pas de Dockerfile pour les microservices : seuls RabbitMQ et Mailpit sont conteneurisés.
+
+### Jalon V6 — Résilience (Resilience4j)
+
+Le jalon V6 protège `service-approvisionnement` contre les pannes et lenteurs de `service-inventaire` et `service-alertes`. Les trois appels Feign (`produit`, `stocks`, `alertesOuvertes`) sont regroupés dans `ServicesDistantsGateway` et décorés par deux annotations :
+
+```java
+@Retry(name = "inventaire", fallbackMethod = "repliProduit")
+@CircuitBreaker(name = "inventaire")
+public ProduitDistantDto produit(Long productId) { ... }
+```
+
+Deux instances de configuration existent : `inventaire` (produit et stocks) et `alertes` (alertes ouvertes). Les paramètres sont dans `config-repo/service-approvisionnement.properties`.
+
+#### Retry
+
+| Paramètre | Valeur |
+|---|---|
+| Tentatives maximum | 3 |
+| Attente entre deux tentatives | 500 ms |
+| Exceptions qui déclenchent une nouvelle tentative | `ServiceDistantIndisponibleException` uniquement |
+
+Un 404 ou une réponse inattendue du service distant n'est donc **jamais** rejoué. Les appels étant des `GET`, ils sont rejouables sans risque. Le `Retryer` de Feign est désactivé (`Retryer.NEVER_RETRY`) : Resilience4j est la seule source de nouvelles tentatives.
+
+#### Circuit Breaker
+
+| Paramètre | Valeur |
+|---|---|
+| Fenêtre glissante | 6 appels (`COUNT_BASED`) |
+| Appels minimum avant évaluation | 4 |
+| Seuil d'échec | 50 % |
+| Durée en état ouvert | 10 s |
+| Appels de test en état semi-ouvert | 3 |
+| Passage automatique ouvert → semi-ouvert | activé |
+| Exceptions **ignorées** (ne comptent pas comme échec) | `RessourceDistanteIntrouvableException`, `ReponseDistanteInattendueException` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> FERME
+    FERME --> OUVERT : au moins 50 % d'échecs sur 6 appels (min. 4)
+    OUVERT --> SEMI_OUVERT : après 10 s
+    SEMI_OUVERT --> FERME : les 3 appels de test réussissent
+    SEMI_OUVERT --> OUVERT : trop d'échecs
+```
+
+Ordre des protections : `retry-aspect-order=1` et `circuit-breaker-aspect-order=2`. Le Retry enveloppe donc le Circuit Breaker : chaque tentative passe par le disjoncteur et est comptée dans sa fenêtre.
+
+#### Replis (fallbacks)
+
+Chaque appel a une méthode de repli (`repliProduit`, `repliStocks`, `repliAlertes`) qui traduit l'échec en exception métier :
+
+| Cause | Résultat côté API |
+|---|---|
+| Erreur métier distante (404, réponse inattendue) | exception d'origine conservée → 404 ou 502 |
+| Disjoncteur ouvert (`CallNotPermittedException`) | `ServiceDistantIndisponibleException` « Circuit Breaker ouvert », avec un avertissement dans les logs → **503** immédiat, sans appel réseau |
+| Erreur de communication (service arrêté, délai dépassé, 5xx) après les tentatives | `ServiceDistantIndisponibleException` → **503** |
+
+Comme en V4, la **consultation** `GET /purchase-orders/{id}` reste tolérante (bloc `null` + `avertissements`), alors que la **création** est refusée (503) si un contrôle ne peut pas être fait.
+
+> Au pire, un appel vers un service muet peut durer environ 10 s (3 tentatives × délai de lecture de 3 s, plus 2 pauses de 500 ms) avant de répondre 503. Si le disjoncteur est ouvert, la réponse est immédiate.
+
+#### Tester le comportement
+
+1. Démarrer toute la plateforme et vérifier qu'une création de commande répond `201`.
+2. Arrêter `service-inventaire`.
+3. Envoyer plusieurs créations avec des clés `Idempotency-Key` différentes : `503` après les tentatives, puis, une fois le seuil franchi, `503` immédiat « Circuit Breaker ouvert ».
+4. Redémarrer `service-inventaire`, attendre 10 s : le disjoncteur passe en semi-ouvert, puis se referme après 3 appels réussis.
+
+> Les états du disjoncteur ne sont pas exposés : `management.endpoints.web.exposure.include` ne contient que `health,info`. Pour les observer, ajouter `circuitbreakers,retries` à cette liste dans `config-repo/application.properties` (puis commit + push). Aucune collection Postman ni schéma dédié à la V6 n'est encore présent dans le dépôt, et aucun test automatisé ne couvre ce jalon.
+
+## Tests
+
+### Tests unitaires (Mockito, sans démarrer les services)
+
+| Classe | Module | Tests |
+|---|---|---|
+| `ControleCommandeServiceTest` | service-approvisionnement | 6 |
+| `PurchaseOrderServiceTest` | service-approvisionnement | 9 |
+| `NotificationServiceTest` | service-notification | 6 |
+| `*ApplicationTests` (chargement du contexte) | inventaire, approvisionnement, alertes | 1 par module |
+
+```bash
+./mvnw -pl service-approvisionnement,service-notification test -Dtest="ControleCommandeServiceTest,PurchaseOrderServiceTest,NotificationServiceTest" -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+### Tests d'API (Postman / Newman)
+
+| Collection | Requêtes | Contenu | Détail |
+|---|---|---|---|
+| `postman/Stock-Alert-v1.postman_collection.json` | 72 | CRUD, validation (400), inexistants (404), conflits (409) | conservée pour l'historique |
+| `postman/Stock-Alert-v4.postman_collection.json` | 101 | les 72 de la V1 adaptées + 29 pour la V4 (dossiers `V4-0` à `V4-6`) | [`docs/tests-postman-v4.md`](docs/tests-postman-v4.md) |
+| `postman/Stock-Alert-v5.postman_collection.json` | 33 | `V5-0` préparation, `V5-1` parcours complet, `V5-2` échecs, `V5-3a/3b` traitement différé | [`docs/tests-postman-v5.md`](docs/tests-postman-v5.md) |
+
+Importer la collection dans Postman, démarrer les services et exécuter chaque dossier avec le **Collection Runner**, dans l'ordre (les identifiants créés sont enchaînés par des variables). Avec Newman, les réponses réelles sont conservées dans `postman/resultats/` :
 
 ```powershell
-.\postman\run-newman-v5.ps1 principal   # V5-0, V5-1, V5-2   (ou ./postman/run-newman-v5.sh principal)
+.\postman\run-newman.ps1                # V4  (ou ./postman/run-newman.sh)
+.\postman\run-newman-v5.ps1 principal   # V5-0, V5-1, V5-2  (ou ./postman/run-newman-v5.sh principal)
 .\postman\run-newman-v5.ps1 arret       # V5-3a : service-notification ARRÊTÉ
 # redémarrer service-notification, puis :
 .\postman\run-newman-v5.ps1 reprise     # V5-3b
 ```
 
-Les dossiers `V5-1` et `V5-2` s'enchaînent (compteurs d'emails dans Mailpit) : lancer `V5-0` d'abord, sur des bases fraîches.
+- Le dossier `V4-6` (erreurs de communication) se lance **seul**, après avoir arrêté `service-inventaire`.
+- Les dossiers `V5-1` et `V5-2` s'enchaînent : lancer `V5-0` d'abord, sur des bases fraîches.
+- Swagger UI permet aussi de tester manuellement chaque service.
 
-### Structure ajoutée
+## Limites connues et évolutions
 
-```text
-service-notification/
-├── config/       RabbitConfig (échange, files, DLQ, convertisseur JSON)
-├── listener/     CommandeEvenementListener (@RabbitListener)
-├── service/      NotificationService (validation, doublons, contenu), EmailService (JavaMailSender)
-├── entite/ repository/   NotificationLog (historique, eventId unique)
-├── controller/   GET /notifications, GET /notifications/{id}
-├── dto/ exception/       CommandeEvenement (contrat), ErreurDto, GestionnaireExceptions
-service-approvisionnement/messaging/
-├── CommandeEvenement (contrat JSON), RabbitConfig, CommandeEvenementPublisher (AFTER_COMMIT, @Async)
-```
+**Limites actuelles**
 
-### Choix de conception et limites
+- Pas d'événements Kafka : le seuil franchi ne crée pas automatiquement d'alerte, et une alerte ne déclenche pas de commande (étapes à faire via l'API).
+- `livrer` ne met pas le stock à jour ni ne clôture l'alerte liée.
+- Pas d'appel Alertes → Inventaire pour vérifier le stock avant de créer une alerte.
+- Notification perdue si RabbitMQ est arrêté à l'émission (pas de *transactional outbox*).
+- Les clés d'idempotence n'expirent pas.
+- Bases H2 en mémoire : les données sont recréées à chaque démarrage.
+- Les microservices ne sont pas conteneurisés ; il n'existe pas de collection Postman ni de test automatisé pour la V6.
 
-- **Après le commit, hors requête :** pas d'email pour une transaction annulée, et aucune latence ajoutée à l'API.
-- **File déclarée des deux côtés :** elle existe dès que l'un des services a démarré, donc aucun message n'est perdu avant le premier démarrage du consommateur.
-- **Une seule file** pour les deux types d'événements (clé `purchase-order.*`) ; une nouvelle opération métier = une nouvelle clé de routage.
-- **Limite connue :** si RabbitMQ est arrêté au moment de l'émission, la notification est perdue (la commande, elle, est valide). La solution complète est le patron *transactional outbox* (événement enregistré dans la même transaction, puis relayé), non implémenté ici.
-- Historique des notifications en H2 mémoire (recréé au démarrage), comme les autres services.
-- Pas de Dockerfile pour les microservices : seuls RabbitMQ et Mailpit sont conteneurisés.
+**Évolutions prévues**
 
-### Livraison Git
+- Mettre en place les événements Kafka (`stock-low`, `reorder-triggered`, `delivery-received`) avec gestion des doublons et des nouvelles tentatives.
+- Ajouter l'appel Alertes → Inventaire.
+- Implémenter le patron *transactional outbox* pour les notifications.
+- Passer à PostgreSQL et conteneuriser les microservices avec Docker Compose.
+- Exposer les métriques Resilience4j et ajouter des tests V6.
+- Ajouter un tableau de bord de suivi des stocks et des alertes.
 
-```bash
-git add .
-git commit -m "V5 : notifications email via RabbitMQ et Mailpit"
-git tag V5.0
-git push origin main --tags
-```
+## Auteur
+
+**Aya Jarmouni**
+
+Projet académique — Architecture microservices et automatisation de la gestion des stocks.
